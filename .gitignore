@@ -31,6 +31,7 @@ backend/
 
 # archive-analyzer 서브 프로젝트 (별도 레포)
 archive-analyzer/data/
+!archive-analyzer/data/templates/
 archive-analyzer/*.csv
 archive-analyzer/scripts/extract_metadata_netdrive.py
 archive-analyzer/scripts/rescan_netdrive.py
