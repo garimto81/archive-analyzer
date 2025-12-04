@@ -1,12 +1,62 @@
 # Database Schema Documentation
 
-> **Last Updated**: 2025-12-03
-> **Version**: 2.7.0
+> **Last Updated**: 2025-12-04
+> **Version**: 3.0.0
+> **Related Issues**: #59, #61, #67
 
 이 문서는 archive-analyzer와 연동 레포지토리 간 DB 스키마를 정의합니다.
 **스키마 변경 시 반드시 이 문서를 업데이트하고 관련 레포에 공유해야 합니다.**
 
-### 테이블 요약 (pokervod.db: 23개)
+---
+
+## 시스템 아키텍처 (V3.0)
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Archive Analyzer System                          │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌──────────┐ │
+│  │    NAS      │    │   Scanner   │    │   SQLite    │    │ Firestore│ │
+│  │  (Storage)  │───→│  (Polling)  │───→│  (Local)    │───→│ (Cloud)  │ │
+│  │  18TB       │    │  watchdog   │    │ pokervod.db │    │ gg-poker │ │
+│  └─────────────┘    └─────────────┘    └─────────────┘    └──────────┘ │
+│                                                                  │      │
+│                                                                  ▼      │
+│                                                          ┌──────────┐   │
+│                                                          │  Web App │   │
+│                                                          │  (OTT)   │   │
+│                                                          └──────────┘   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### 데이터 저장소 역할
+
+| 저장소 | 역할 | 기술 스택 |
+|--------|------|-----------|
+| **Firestore** | 프로덕션 클라우드 DB (Primary) | Firebase `gg-poker-prod` |
+| **SQLite** | 로컬 캐시/동기화 원본 | `pokervod.db` (WAL 모드) |
+| **archive.db** | 스캔 전용 로컬 DB | `archive-analyzer` 내부 |
+
+---
+
+## 스키마 요약
+
+### Firestore 컬렉션 (7개)
+
+| 컬렉션 | 문서 수 | 설명 |
+|--------|--------|------|
+| `catalogs` | 10 | 최상위 카탈로그 (WSOP, HCL, PAD...) |
+| `series` | 12 | 시리즈 (WSOP 2024, HCL Season 1...) |
+| `contents` | 2,938 | 개별 콘텐츠/에피소드 |
+| `files` | 2,139 | 미디어 파일 메타데이터 |
+| `players` | 386 | 포커 플레이어 |
+| `tags` | 5 | 콘텐츠 분류 태그 |
+| `users` | 2 | 사용자 |
+
+> **마이그레이션 완료**: 2025-12-04, 5,492 documents (Issue #59, #61)
+
+### SQLite 테이블 (pokervod.db: 23개)
 
 | 카테고리 | 테이블 | 설명 |
 |----------|--------|------|
@@ -24,16 +74,237 @@
 
 ## 연동 레포지토리
 
-| 레포지토리 | DB 파일 | 역할 |
+| 레포지토리 | 저장소 | 역할 |
 |-----------|---------|------|
 | `archive-analyzer` | `archive.db` (로컬) | 아카이브 스캔/메타데이터 |
-| `shared-data` | `pokervod.db` | **통합 DB** (WAL 모드) |
+| `shared-data` | `pokervod.db` | 로컬 캐시/동기화 원본 (WAL 모드) |
+| `gg-poker-prod` | Firestore | **프로덕션 클라우드 DB** |
 
-> 📌 통합 DB 상세: `qwen_hand_analysis/docs/DATABASE_UNIFICATION.md` 참조
+> 📌 데이터 플로우 상세: `docs/DATA_FLOW.md` 참조
 
 ---
 
-## 1. pokervod.db (통합 마스터 DB)
+## 1. Firestore (프로덕션 클라우드 DB)
+
+**프로젝트**: `gg-poker-prod`
+**리전**: `asia-northeast3` (Seoul)
+**마이그레이션 완료**: 2025-12-04 (Issue #59, #61)
+
+### 1.1 컬렉션 구조
+
+```
+firestore/
+├── catalogs/{catalog_id}           # WSOP, HCL, PAD...
+│   └── (subcollection 없음 - flat structure)
+├── series/{series_id}              # WSOP 2024, HCL Season 1...
+├── contents/{content_id}           # 개별 에피소드
+├── files/{file_id}                 # 미디어 파일
+├── players/{player_name}           # 플레이어 정보
+├── tags/{tag_id}                   # 분류 태그
+├── users/{user_id}                 # 사용자
+└── _sync_metadata/                 # 동기화 메타데이터 (내부용)
+```
+
+### 1.2 컬렉션 상세
+
+#### catalogs
+최상위 카탈로그 (WSOP, HCL, PAD 등)
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | string | 카탈로그 ID (document ID와 동일) |
+| `name` | string | 카탈로그명 |
+| `description` | string | 설명 |
+| `display_title` | string | 시청자용 표시 제목 |
+| `title_source` | string | 제목 생성 방식 (rule_based/ai_generated/manual) |
+| `title_verified` | boolean | 수동 검수 완료 여부 |
+| `created_at` | timestamp | 생성일시 |
+| `updated_at` | timestamp | 수정일시 |
+
+#### series
+시리즈: 카탈로그 내 콘텐츠 시리즈
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | number | 시리즈 ID |
+| `catalog_id` | string | 소속 카탈로그 ID |
+| `title` | string | 시리즈 제목 |
+| `season_num` | number | 시즌 번호 |
+| `year` | number | 연도 |
+| `description` | string | 설명 |
+| `episode_count` | number | 에피소드 수 |
+| `created_at` | timestamp | 생성일시 |
+
+#### contents
+개별 콘텐츠 (에피소드/영상)
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | number | 콘텐츠 ID |
+| `series_id` | number | 소속 시리즈 ID |
+| `file_id` | string | 연결된 파일 ID |
+| `episode_num` | number | 에피소드 번호 |
+| `title` | string | 제목 |
+| `duration_sec` | number | 재생 시간 (초) |
+| `description` | string | 설명 |
+| `players` | array<string> | 출연 플레이어 목록 |
+| `tags` | array<string> | 태그 목록 |
+| `created_at` | timestamp | 생성일시 |
+
+#### files
+미디어 파일 메타데이터
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | string | 파일 ID (NAS 경로 해시) |
+| `nas_path` | string | NAS 전체 경로 |
+| `filename` | string | 파일명 |
+| `size_bytes` | number | 파일 크기 |
+| `duration_sec` | number | 재생 시간 (초) |
+| `resolution` | string | 해상도 (예: "1920x1080") |
+| `codec` | string | 비디오 코덱 |
+| `fps` | number | 프레임레이트 |
+| `bitrate_kbps` | number | 비트레이트 |
+| `analysis_status` | string | 분석 상태 (pending/completed/failed) |
+| `display_title` | string | 시청자용 제목 |
+| `created_at` | timestamp | 생성일시 |
+| `updated_at` | timestamp | 수정일시 |
+
+#### players
+포커 플레이어 정보
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `name` | string | 이름 (document ID) |
+| `display_name` | string | 표시 이름 |
+| `country` | string | 국가 |
+| `total_hands` | number | 총 핸드 수 |
+| `total_wins` | number | 총 승리 수 |
+| `first_seen_at` | timestamp | 첫 등장 시간 |
+| `last_seen_at` | timestamp | 마지막 활동 시간 |
+
+#### tags
+콘텐츠 분류 태그
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | number | 태그 ID |
+| `name` | string | 태그명 |
+| `type` | string | 태그 유형 (player, event, action 등) |
+| `created_at` | timestamp | 생성일시 |
+
+#### users
+사용자 정보
+
+| 필드 | 타입 | 설명 |
+|------|------|------|
+| `id` | string | 사용자 ID |
+| `email` | string | 이메일 |
+| `display_name` | string | 표시 이름 |
+| `role` | string | 역할 (admin/user) |
+| `provider` | string | 인증 제공자 (google) |
+| `created_at` | timestamp | 생성일시 |
+| `last_login_at` | timestamp | 마지막 로그인 |
+
+### 1.3 인덱스
+
+```
+// firestore.indexes.json
+{
+  "indexes": [
+    {
+      "collectionGroup": "contents",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "series_id", "order": "ASCENDING" },
+        { "fieldPath": "episode_num", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "files",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "analysis_status", "order": "ASCENDING" },
+        { "fieldPath": "updated_at", "order": "DESCENDING" }
+      ]
+    }
+  ]
+}
+```
+
+### 1.4 보안 규칙
+
+```javascript
+// firestore.rules
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 읽기: 인증된 사용자
+    // 쓰기: 관리자만 (server-side)
+    match /{document=**} {
+      allow read: if request.auth != null;
+      allow write: if false;  // Admin SDK only
+    }
+  }
+}
+```
+
+---
+
+## 2. SQLite ↔ Firestore 동기화
+
+### 2.1 매핑 테이블
+
+| SQLite (pokervod.db) | Firestore | 동기화 방향 | 키 |
+|---------------------|-----------|-------------|-----|
+| `catalogs` | `catalogs/{id}` | SQLite → Firestore | `id` |
+| `series` | `series/{id}` | SQLite → Firestore | `id` |
+| `contents` | `contents/{id}` | SQLite → Firestore | `id` |
+| `files` | `files/{id}` | SQLite → Firestore | `id` (nas_path 해시) |
+| `players` | `players/{name}` | SQLite → Firestore | `name` |
+| `tags` | `tags/{id}` | SQLite → Firestore | `id` |
+| `users` | `users/{id}` | SQLite → Firestore | `id` |
+
+### 2.2 동기화 전략
+
+```
+┌──────────────┐                      ┌──────────────┐
+│    SQLite    │                      │   Firestore  │
+│  pokervod.db │                      │  gg-poker    │
+├──────────────┤                      ├──────────────┤
+│ updated_at   │ ──── Incremental ──→ │ updated_at   │
+│              │     (Batch 500)      │              │
+└──────────────┘                      └──────────────┘
+         ↑                                    │
+         │                                    │
+    NAS Scanner                          Web App
+    (archive.db)                         (OTT)
+```
+
+**증분 동기화:**
+```python
+# 마지막 동기화 이후 변경된 레코드만
+changed = SELECT * FROM files WHERE updated_at > last_sync
+
+# 500개씩 Batch Write
+for batch in chunks(changed, 500):
+    firestore.batch().set(batch).commit()
+```
+
+### 2.3 데이터 타입 변환
+
+| SQLite 타입 | Firestore 타입 | 변환 규칙 |
+|------------|----------------|----------|
+| `INTEGER` | `number` | 직접 변환 |
+| `TEXT` | `string` | 직접 변환 |
+| `REAL` | `number` | 직접 변환 |
+| `BLOB` | `bytes` | Base64 인코딩 |
+| `TIMESTAMP` | `timestamp` | ISO 8601 → Firestore Timestamp |
+| `JSON (TEXT)` | `array` / `map` | JSON.parse() |
+
+---
+
+## 3. pokervod.db (로컬 캐시 DB)
 
 **경로**: `D:/AI/claude01/shared-data/pokervod.db`
 **관리**: 모든 프로젝트 공유 (WAL 모드)
@@ -218,7 +489,7 @@
 
 ---
 
-## 2. archive.db (아카이브 스캔 DB)
+## 4. archive.db (아카이브 스캔 DB)
 
 **경로**: `d:/AI/claude01/archive-analyzer/data/output/archive.db`
 **소유자**: `archive-analyzer` 레포
@@ -258,7 +529,7 @@ archive-analyzer                              qwen_hand_analysis
 
 ---
 
-## 3. 스키마 변경 관리
+## 5. 스키마 변경 관리
 
 ### 3.1 변경 절차
 
@@ -330,7 +601,7 @@ def sync_files():
 
 ---
 
-## 4. 연동 키 규칙
+## 6. 연동 키 규칙
 
 ### 4.1 파일 ID 생성
 
@@ -360,7 +631,7 @@ def local_to_nas(local_path: str) -> str:
 
 ---
 
-## 5. 카테고리/서브카테고리 매핑
+## 7. 카테고리/서브카테고리 매핑
 
 ### 5.1 다단계 분류 규칙
 
@@ -474,7 +745,7 @@ print(match.depth)                # 2
 
 ---
 
-## 6. Viewer-Friendly Naming Design
+## 8. Viewer-Friendly Naming Design
 
 ### 6.1 Problem Statement
 
@@ -692,7 +963,7 @@ SYNONYMS = {
 
 ---
 
-## 7. Archive Team Google Sheet 동기화
+## 9. Archive Team Google Sheet 동기화
 
 ### 7.1 개요
 
@@ -883,7 +1154,7 @@ def grade_to_stars(score: int) -> str:
 
 ---
 
-## 8. 추천 시스템 스키마 (Phase 3)
+## 10. 추천 시스템 스키마 (Phase 3)
 
 > **Status**: ✅ 스키마 구현 완료 (마이그레이션: `scripts/migrate_recommendation_schema.py`)
 > **목표**: Netflix/Disney+ 스타일 동적 카탈로그 및 개인화 추천
@@ -1425,7 +1696,7 @@ async def get_recommendations(user_id: str, n: int = 20):
 
 ---
 
-## 9. 멀티 카탈로그 시스템 (Phase 3)
+## 11. 멀티 카탈로그 시스템 (Phase 3)
 
 > **Status**: 구현 완료
 > **목표**: 하나의 콘텐츠가 여러 카탈로그/컬렉션에 속할 수 있도록 N:N 관계 지원
@@ -1703,7 +1974,7 @@ async def get_collection_items(collection_id: str, limit: int = 50):
 
 ---
 
-## 10. 사용자 및 인증 시스템
+## 12. 사용자 및 인증 시스템
 
 ### 10.1 users
 사용자 계정 정보 (Google OAuth 지원)
@@ -1796,7 +2067,7 @@ async def get_collection_items(collection_id: str, limit: int = 50):
 
 ---
 
-## 11. 검색 시스템 (wsoptv_*)
+## 13. 검색 시스템 (wsoptv_*)
 
 ### 11.1 wsoptv_search_index
 통합 검색 인덱스
@@ -1874,7 +2145,7 @@ async def get_collection_items(collection_id: str, limit: int = 50):
 
 ---
 
-## 12. V3.0 스키마 설계 (Video Card 중심)
+## 14. V3.0 스키마 설계 (Video Card 중심)
 
 > ✅ **구현 상태**: 마이그레이션 스크립트 구현 완료
 >
@@ -2314,6 +2585,7 @@ GROUP BY c.id;
 
 | 날짜 | 버전 | 변경 내용 |
 |------|------|----------|
+| 2025-12-04 | 3.0.0 | **Firestore 마이그레이션 완료** (#59, #61): 프로덕션 클라우드 DB 추가, 7개 컬렉션 5,492 docs, SQLite↔Firestore 동기화 전략 문서화 |
 | 2025-12-03 | 2.7.0 | **레거시 테이블 삭제**: pokervod.db에서 7개 레거시 테이블 삭제, DB 크기 5.73MB→4.84MB |
 | 2025-12-03 | 2.6.0 | **레거시 스키마 분리**: subcatalogs, tournaments, events, hands, hand_players, hand_tags, id_mapping → `DATABASE_SCHEMA_LEGACY.md` |
 | 2025-12-03 | 2.5.1 | **V3.0 스키마 설계 문서 추가** (미구현): 3단계 계층 구조, contents 통합, Headline 생성 규칙 - Section 12 |
