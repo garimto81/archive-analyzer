@@ -1,0 +1,63 @@
+# NAS 자동 동기화 Docker 서비스
+# Issue #17: NAS 신규 데이터 자동 감지 및 DB 등록
+#
+# Usage:
+#   docker-compose -f docker-compose.nas-sync.yml up -d
+#   docker-compose -f docker-compose.nas-sync.yml logs -f
+
+version: "3.8"
+
+services:
+  nas-auto-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nas-auto-sync
+    restart: unless-stopped
+
+    environment:
+      # SMB 설정
+      - SMB_SERVER=${SMB_SERVER:-10.10.100.122}
+      - SMB_SHARE=${SMB_SHARE:-docker}
+      - SMB_USERNAME=${SMB_USERNAME:-GGP}
+      - SMB_PASSWORD=${SMB_PASSWORD}
+      - ARCHIVE_PATH=${ARCHIVE_PATH:-GGPNAs/ARCHIVE}
+
+      # DB 경로 (컨테이너 내부)
+      - ARCHIVE_DB=/data/archive.db
+      - POKERVOD_DB=/data/pokervod.db
+
+      # 동기화 간격 (초)
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-1800}
+
+    volumes:
+      # 데이터 볼륨 (DB 파일 영속화)
+      - archive-data:/data
+
+      # 호스트 DB 공유 (선택)
+      - ${HOST_DATA_DIR:-./data/output}:/data/output:rw
+      - ${POKERVOD_DB_PATH:-D:/AI/claude01/shared-data}:/shared-data:rw
+
+    command: >
+      python -m archive_analyzer.nas_auto_sync
+      --interval ${SYNC_INTERVAL:-1800}
+      --archive-db /data/archive.db
+      --pokervod-db /shared-data/pokervod.db
+
+    # 헬스체크
+    healthcheck:
+      test: ["CMD", "python", "-c", "import archive_analyzer; print('OK')"]
+      interval: 5m
+      timeout: 10s
+      retries: 3
+
+    # 로깅
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  archive-data:
+    name: nas-sync-archive-data
