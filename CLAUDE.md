@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Version**: 4.2.0 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
+**Version**: 4.3.0 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
 
 ## 1. Critical Rules
 
@@ -156,6 +156,10 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 | `/tdd` | TDD 가이드 |
 | `/check` | 코드 품질 검사 |
 | `/issue-failed` | 실패 분석 + 새 솔루션 제안 |
+| `/analyze-logs` | 로그 파일 분석 (디버깅) |
+| `/issue-update` | 이슈 진행 상태 업데이트 |
+| `/pre-work` | PRE_WORK 단계 실행 (OSS 검색) |
+| `/work` | 작업 지시 실행 (분석→이슈→E2E→TDD) |
 
 ### 병렬 커맨드
 
@@ -211,12 +215,25 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 | `playwright-engineer` | 2, 5 |
 | `context7-engineer` | 0, 1 |
 
+### Model Tiering
+
+| Role | Tier | Model ID |
+|------|------|----------|
+| supervisor / lead / coder / reviewer | sonnet | `claude-sonnet-4-20250514` |
+| validator / tester | haiku | `claude-haiku-3-20240307` |
+
+> 설정: `src/agents/config.py` - `AGENT_MODEL_TIERS`
+
 ### 병렬 호출
 
 ```python
 # 단일 메시지에 여러 Task = 병렬 실행
 Task(subagent_type="frontend-developer", prompt="UI 구현", description="프론트")
 Task(subagent_type="backend-architect", prompt="API 구현", description="백엔드")
+
+# 의존성 있는 경우 순차 실행
+result = Task(subagent_type="database-architect", prompt="스키마 설계")
+Task(subagent_type="backend-architect", prompt=f"API 구현, 스키마: {result}")
 ```
 
 > 전체 에이전트 목록 (28개): `docs/AGENTS_REFERENCE.md`
@@ -242,12 +259,36 @@ D:\AI\claude01\
 ### LangGraph Multi-Agent (Fan-Out/Fan-In)
 
 ```
-Supervisor (sonnet) → [Agent 0, Agent 1, Agent 2] (병렬) → Aggregator (sonnet)
+┌─────────────────────────────────────────────────────────┐
+│                    Supervisor (sonnet)                   │
+│              태스크 분석 및 서브태스크 분배              │
+└─────────────────────┬───────────────────────────────────┘
+                      │ Fan-Out
+        ┌─────────────┼─────────────┐
+        ▼             ▼             ▼
+   ┌─────────┐   ┌─────────┐   ┌─────────┐
+   │ Agent 0 │   │ Agent 1 │   │ Agent 2 │  (병렬 실행)
+   │ (coder) │   │(tester) │   │ (docs)  │
+   └────┬────┘   └────┬────┘   └────┬────┘
+        │             │             │
+        └─────────────┼─────────────┘
+                      │ Fan-In
+                      ▼
+┌─────────────────────────────────────────────────────────┐
+│                   Aggregator (sonnet)                    │
+│                  결과 통합 및 검증                       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-**Model Tiering** (`src/agents/config.py`):
-- supervisor/researcher: sonnet (복잡한 의사결정)
-- validator: haiku (간단한 검증, 비용 최적화)
+**Phase별 에이전트 매핑** (`src/agents/config.py` - `PHASE_AGENTS`):
+
+| Phase | 에이전트 |
+|-------|----------|
+| 0 | requirements_agent, stakeholder_agent |
+| 0.5 | task_decomposer, dependency_analyzer |
+| 1 | code_agent, test_agent, docs_agent |
+| 2 | unit_test_runner, integration_test_runner, security_scanner |
+| 2.5 | code_reviewer, design_reviewer, security_auditor |
 
 ---
 
