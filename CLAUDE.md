@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Version**: 3.6.0 | **Updated**: 2025-12-06 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
+**Version**: 4.0.0 | **Updated**: 2025-12-06 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
 
 ## 1. Critical Rules
 
@@ -137,7 +137,39 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 
 ---
 
-## 6. Agents
+## 6. Skills
+
+자동 트리거 워크플로우. `.claude/skills/` 에 정의.
+
+| Skill | 트리거 | Phase |
+|-------|--------|-------|
+| `debugging-workflow` | "로그 분석", "debug", "실패" | 문제 시 |
+| `pre-work-research` | "신규 기능", "오픈소스" | PRE_WORK |
+| `final-check-automation` | "E2E", "Phase 5" | FINAL_CHECK |
+| `tdd-workflow` | "TDD", "Red-Green" | 1, 2 |
+| `code-quality-checker` | "린트", "품질 검사" | 2, 2.5 |
+| `phase-validation` | "Phase 검증", "validate" | 전체 |
+| `parallel-agent-orchestration` | "병렬 개발", "multi-agent" | 1, 2 |
+| `issue-resolution` | "이슈 해결", "fix issue" | 1, 2 |
+
+**사용법**: 트리거 키워드 언급 시 자동 로드 또는 직접 호출
+
+```bash
+# 전체 Phase 상태 확인
+python .claude/skills/phase-validation/scripts/validate_phase.py --status
+
+# TDD 자동 사이클
+python .claude/skills/tdd-workflow/scripts/tdd_auto_cycle.py tests/test_file.py
+
+# 품질 검사
+python .claude/skills/code-quality-checker/scripts/run_quality_check.py --fix
+```
+
+> 상세: `.claude/skills/<skill-name>/SKILL.md`
+
+---
+
+## 7. Agents
 
 ### 내장 Subagent
 
@@ -172,7 +204,7 @@ Task(subagent_type="backend-architect", prompt="API 구현", description="백엔
 
 ---
 
-## 7. Architecture
+## 8. Architecture
 
 ```
 D:\AI\claude01\
@@ -200,7 +232,7 @@ Supervisor (sonnet) → [Agent 0, Agent 1, Agent 2] (병렬) → Aggregator (son
 
 ---
 
-## 8. Browser Testing & E2E
+## 9. Browser Testing & E2E
 
 **모든 Phase에서** 브라우저 테스트 가능.
 
@@ -222,7 +254,7 @@ Task(subagent_type="playwright-engineer", prompt="로그인 플로우 테스트"
 
 ---
 
-## 9. MCP Tools
+## 10. MCP Tools
 
 `.mcp.json`에 설정. `mcp__<server>__<tool>` 형태로 호출.
 
@@ -235,7 +267,7 @@ Task(subagent_type="playwright-engineer", prompt="로그인 플로우 테스트"
 
 ---
 
-## 10. Environment
+## 11. Environment
 
 | 변수 | 용도 |
 |------|------|
@@ -248,7 +280,7 @@ Task(subagent_type="playwright-engineer", prompt="로그인 플로우 테스트"
 
 ---
 
-## 11. Do Not
+## 12. Do Not
 
 - ❌ Phase validator 없이 다음 Phase 진행
 - ❌ 상대 경로 사용 (`./`, `../`)
