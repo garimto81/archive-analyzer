@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Version**: 4.5.0 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
+**Version**: 4.5.1 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
 
 ## 1. Critical Rules
 
@@ -144,7 +144,7 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 
 ---
 
-## 6. Commands (15개)
+## 6. Commands (17개)
 
 ### 핵심 워크플로우
 
@@ -274,7 +274,7 @@ Task(subagent_type="backend-architect", prompt=f"API 구현, 스키마: {result}
 ```
 D:\AI\claude01\
 ├── .claude/
-│   ├── commands/      # 슬래시 커맨드 (29개)
+│   ├── commands/      # 슬래시 커맨드 (17개)
 │   ├── plugins/       # 로컬 에이전트 정의 (50개)
 │   ├── skills/        # 자동 트리거 워크플로우 (10개)
 │   └── hooks/         # 프롬프트 검증
@@ -367,10 +367,11 @@ Claude Code 비정상 종료 방지 규칙. ([#27](https://github.com/garimto81/
 # ❌ 금지 (2분 초과 시 EPERM 크래시)
 pytest tests/ -v --cov                    # 대규모 테스트
 npm install && npm run build && npm test  # 체인 명령어
-systemctl restart && sleep 60 && status   # 장시간 대기
+Start-Sleep -Seconds 120                  # 장시간 대기 (Windows)
 
 # ✅ 권장
 pytest tests/ -v -x --timeout=60          # 타임아웃 설정
+pytest tests/test_a.py -v                 # 개별 파일 분할
 # 또는 Bash tool에서 run_in_background: true 사용
 ```
 
@@ -408,9 +409,9 @@ CLAUDE.md 자동 최적화 시스템. `src/agents/prompt_learning/`
 | `claude_md_updater.py` | CLAUDE.md 자동 업데이트 |
 
 ```powershell
-# 최적화 실행
-python scripts/optimize_phase_validators.py
-python scripts/ab_test_validators.py
+# 최적화 실행 (모듈 방식)
+python -m src.agents.prompt_learning.dspy_optimizer
+python -m src.agents.prompt_learning.ab_test
 ```
 
 > 상세: `docs/guides/PROMPT_LEARNING_GUIDE.md`
