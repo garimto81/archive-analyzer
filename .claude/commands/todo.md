@@ -11,7 +11,41 @@ Manage project tasks with priorities, due dates, and progress tracking.
 
 ```
 /todo [action] [args]
+/todo --log "작업 내용"    # 작업 진행 내용 MD 파일 기록
 ```
+
+## Options
+
+### --log 모드
+
+작업 진행 내용을 MD 파일에 상세 기록합니다:
+
+```bash
+/todo --log "API 인증 구현 완료"
+
+# 자동 생성: logs/work-log-2025-01-20.md
+```
+
+**기록 형식**:
+```markdown
+# 작업 로그 - 2025-01-20
+
+## 10:30 - API 인증 구현 완료
+- **작업 내용**: JWT 기반 인증 미들웨어 구현
+- **변경 파일**: src/auth/middleware.ts, src/auth/jwt.ts
+- **관련 이슈**: #123
+- **다음 단계**: 테스트 케이스 작성
+
+## 11:45 - 테스트 작성
+...
+```
+
+**사용 시나리오**:
+- 복잡한 디버깅 과정 기록
+- 의사결정 과정 문서화
+- 나중에 참조할 컨텍스트 보존
+
+---
 
 ## Actions
 

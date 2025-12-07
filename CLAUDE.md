@@ -2,10 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Version**: 4.3.0 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
+**Version**: 4.4.0 | **Updated**: 2025-12-07 | **Context**: Windows 10/11, PowerShell, Root: `D:\AI\claude01`
 
 ## 1. Critical Rules
 
+0. **Conflict Resolution**: 지침과 컨텍스트 충돌 시 → **사용자에게 질문** (임의 판단 금지)
 1. **Language**: 한글 출력. 기술 용어(code, GitHub)는 영어.
 2. **Path**: 절대 경로만 사용. `D:\AI\claude01\...`
 3. **Validation**: Phase 검증 필수. 실패 시 STOP.
@@ -143,39 +144,65 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 
 ---
 
-## 6. Commands
+## 6. Commands (15개)
 
-### 핵심 커맨드
+### 핵심 워크플로우
 
 | 커맨드 | 용도 |
 |--------|------|
-| `/autopilot` | 자율 운영 - 이슈 자동 처리 |
-| `/fix-issue` | GitHub 이슈 분석 및 수정 |
-| `/commit` | Conventional Commit 생성 |
-| `/create-pr` | PR 생성 |
-| `/tdd` | TDD 가이드 |
-| `/check` | 코드 품질 검사 |
-| `/issue-failed` | 실패 분석 + 새 솔루션 제안 |
-| `/analyze-logs` | 로그 파일 분석 (디버깅) |
-| `/issue-update` | 이슈 진행 상태 업데이트 |
-| `/pre-work` | PRE_WORK 단계 실행 (OSS 검색) |
 | `/work` | 작업 지시 실행 (분석→이슈→E2E→TDD) |
+| `/autopilot` | 자율 운영 - 이슈 자동 처리 |
+| `/pre-work` | PRE_WORK 단계 실행 (OSS 검색) |
+| `/final-check` | E2E + Security 최종 검증 |
 
-### 병렬 커맨드
+### 통합 커맨드 (서브커맨드 지원)
 
-| 커맨드 | 호출 Agent |
-|--------|------------|
-| `/parallel-dev` | architect + coder + tester + docs |
-| `/parallel-test` | unit + integration + e2e + security |
-| `/parallel-review` | code-reviewer + security-auditor + architect-reviewer |
+| 커맨드 | 서브커맨드 | 용도 |
+|--------|-----------|------|
+| `/issue` | `list\|create\|fix\|failed` | GitHub 이슈 관리 |
+| `/parallel` | `dev\|test\|review\|research` | 병렬 멀티에이전트 |
+| `/analyze` | `code\|logs` | 코드/로그 분석 |
+| `/create` | `prd\|pr\|docs` | PRD/PR/문서 생성 |
 
-> 전체 목록 (28개): `.claude/commands/`
+### 단일 커맨드
+
+| 커맨드 | 용도 |
+|--------|------|
+| `/commit` | Conventional Commit 생성 |
+| `/tdd` | TDD 가이드 (Red-Green-Refactor) |
+| `/check` | 코드 품질 검사 |
+| `/changelog` | CHANGELOG 업데이트 |
+| `/optimize` | 성능 분석 및 최적화 |
+| `/todo` | 작업 목록 관리 |
+| `/api-test` | API 엔드포인트 테스트 |
+
+### 사용 예시
+
+```bash
+# 이슈 관리
+/issue list                    # 이슈 목록
+/issue fix 123                 # 이슈 해결
+
+# 병렬 실행
+/parallel dev "인증 기능"       # 병렬 개발
+/parallel test                 # 병렬 테스트
+
+# 분석
+/analyze code --comprehensive  # 종합 분석
+/analyze logs --errors         # 에러 로그
+
+# 생성
+/create prd --template=minimal # PRD 생성
+/create pr                     # PR 생성
+```
+
+> 커맨드 사용 통계: `.claude/logs/command-usage.json`
 
 ---
 
 ## 7. Skills
 
-자동 트리거 워크플로우. `.claude/skills/` 에 정의.
+자동 트리거 워크플로우. `.claude/skills/`에 정의 (10개).
 
 | Skill | 트리거 | Phase |
 |-------|--------|-------|
@@ -187,6 +214,8 @@ E2E 테스트 → Phase 3~5 자동 진행 → Phase 6(배포)은 사용자 확�
 | `phase-validation` | "Phase 검증", "validate" | 전체 |
 | `parallel-agent-orchestration` | "병렬 개발", "multi-agent" | 1, 2 |
 | `issue-resolution` | "이슈 해결", "fix issue" | 1, 2 |
+| `webapp-testing` | "브라우저 테스트", "Playwright" | 2, 5 |
+| `skill-creator` | "skill 생성", "새 워크플로우" | - |
 
 **사용법**: 트리거 키워드 언급 시 자동 로드. 상세: `.claude/skills/<skill-name>/SKILL.md`
 
@@ -245,9 +274,9 @@ Task(subagent_type="backend-architect", prompt=f"API 구현, 스키마: {result}
 ```
 D:\AI\claude01\
 ├── .claude/
-│   ├── commands/      # 슬래시 커맨드 (28개)
-│   ├── plugins/       # 로컬 에이전트 정의 (49개)
-│   ├── skills/        # webapp-testing, skill-creator
+│   ├── commands/      # 슬래시 커맨드 (29개)
+│   ├── plugins/       # 로컬 에이전트 정의 (50개)
+│   ├── skills/        # 자동 트리거 워크플로우 (10개)
 │   └── hooks/         # 프롬프트 검증
 ├── src/agents/        # LangGraph 멀티에이전트
 ├── scripts/           # Phase Validators (PowerShell)
