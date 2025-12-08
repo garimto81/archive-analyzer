@@ -1,9 +1,15 @@
 """NAS 자동 동기화 데몬
 
 Issue #17: NAS 신규 데이터 자동 감지 및 DB 등록
+Issue #41: NAS 경로 변경 실시간 감지 및 DB 자동 동기화
 
 NAS에 새로운 파일이 추가되면 자동으로 감지하여 DB에 등록합니다.
 폴링 방식으로 주기적으로 NAS를 스캔하고, 신규 파일만 처리합니다.
+
+v2.0 추가 기능 (Issue #41):
+- 파일 이동/삭제 감지 (path_tracker 통합)
+- 해시 기반 파일 동일성 추적
+- Soft Delete 지원
 
 Usage:
     # 기본 실행 (30분 간격)
@@ -17,6 +23,12 @@ Usage:
 
     # Dry-run (DB 변경 없음)
     python -m archive_analyzer.nas_auto_sync --once --dry-run
+
+    # 경로 추적 모드 (이동/삭제 감지)
+    python -m archive_analyzer.nas_auto_sync --track
+
+    # 정합성 검증 (DB에만 있고 NAS에 없는 파일 찾기)
+    python -m archive_analyzer.nas_auto_sync --reconcile
 """
 
 import logging
@@ -35,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 from archive_analyzer.config import SMBConfig
 from archive_analyzer.database import Database
 from archive_analyzer.file_classifier import classify_file
+from archive_analyzer.path_tracker import NASPathTracker, TrackerConfig, TrackerResult
 from archive_analyzer.smb_connector import SMBConnector
 from archive_analyzer.sync import SyncConfig, SyncService
 
@@ -380,6 +393,93 @@ class NASAutoSync:
         finally:
             self._disconnect()
 
+    def run_track_mode(self, nas_mount_path: str = "Z:/GGPNAs/ARCHIVE") -> TrackerResult:
+        """경로 추적 모드 실행 (Issue #41)
+
+        watchdog PollingObserver를 사용하여 NAS 파일 변경을 실시간 감지하고,
+        해시 기반으로 파일 이동을 추적합니다.
+
+        Args:
+            nas_mount_path: 마운트된 NAS 경로 (기본: Z:/GGPNAs/ARCHIVE)
+
+        Returns:
+            TrackerResult 객체
+        """
+        logger.info("=" * 50)
+        logger.info("NAS 경로 추적 모드 시작 (Issue #41)")
+        logger.info("=" * 50)
+
+        tracker_config = TrackerConfig(
+            db_path=self.config.archive_db,
+            pokervod_db=self.config.pokervod_db,
+            nas_path=nas_mount_path,
+        )
+
+        tracker = NASPathTracker(tracker_config)
+
+        try:
+            tracker.run_daemon()
+        except KeyboardInterrupt:
+            logger.info("\n경로 추적 종료")
+
+        return TrackerResult()
+
+    def run_reconcile(self, nas_mount_path: str = "Z:/GGPNAs/ARCHIVE", dry_run: bool = False) -> dict:
+        """정합성 검증 (DB vs NAS)
+
+        DB에 등록된 파일이 실제 NAS에 존재하는지 확인하고,
+        존재하지 않는 파일은 status='deleted'로 마킹합니다.
+
+        Args:
+            nas_mount_path: 마운트된 NAS 경로
+            dry_run: True면 실제 DB 변경 없이 시뮬레이션
+
+        Returns:
+            검증 결과 딕셔너리
+        """
+        logger.info("=" * 50)
+        logger.info("NAS 정합성 검증 시작")
+        logger.info(f"NAS 경로: {nas_mount_path}")
+        logger.info(f"DB 경로: {self.config.archive_db}")
+        if dry_run:
+            logger.info("[DRY-RUN 모드]")
+        logger.info("=" * 50)
+
+        tracker_config = TrackerConfig(
+            db_path=self.config.archive_db,
+            pokervod_db=self.config.pokervod_db,
+            nas_path=nas_mount_path,
+        )
+
+        tracker = NASPathTracker(tracker_config)
+
+        if dry_run:
+            # Dry-run: DB 조회만 수행
+            conn = sqlite3.connect(self.config.archive_db)
+            try:
+                cursor = conn.execute(
+                    "SELECT id, nas_path FROM files WHERE status = 'active' OR status IS NULL"
+                )
+                rows = cursor.fetchall()
+
+                missing_count = 0
+                for file_id, nas_path in rows:
+                    if not Path(nas_path).exists():
+                        missing_count += 1
+                        logger.info(f"[DRY-RUN] 누락: {nas_path}")
+
+                logger.info(f"\n[DRY-RUN] 검증 완료: {missing_count}개 누락")
+                return {"missing": missing_count, "dry_run": True}
+
+            finally:
+                conn.close()
+        else:
+            result = tracker.reconcile()
+            return {
+                "deleted": result.deleted,
+                "errors": len(result.errors),
+            }
+
 
 def main():
     import argparse
@@ -425,6 +525,24 @@ Examples:
         type=str,
         help="pokervod.db 경로",
     )
+    parser.add_argument(
+        "--track",
+        "-t",
+        action="store_true",
+        help="경로 추적 모드 (watchdog 기반 실시간 감지, Issue #41)",
+    )
+    parser.add_argument(
+        "--reconcile",
+        "-r",
+        action="store_true",
+        help="정합성 검증 (DB에만 있고 NAS에 없는 파일 찾기)",
+    )
+    parser.add_argument(
+        "--nas-mount",
+        type=str,
+        default="Z:/GGPNAs/ARCHIVE",
+        help="마운트된 NAS 경로 (기본: Z:/GGPNAs/ARCHIVE)",
+    )
 
     args = parser.parse_args()
 
@@ -439,7 +557,17 @@ Examples:
     # 서비스 실행
     service = NASAutoSync(config)
 
-    if args.once:
+    if args.track:
+        # Issue #41: 경로 추적 모드
+        service.run_track_mode(nas_mount_path=args.nas_mount)
+    elif args.reconcile:
+        # Issue #41: 정합성 검증
+        result = service.run_reconcile(
+            nas_mount_path=args.nas_mount,
+            dry_run=args.dry_run,
+        )
+        logger.info(f"정합성 검증 결과: {result}")
+    elif args.once:
         service.run_once(dry_run=args.dry_run)
     else:
         service.run_daemon()
