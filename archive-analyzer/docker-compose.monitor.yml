@@ -41,12 +41,21 @@ services:
       # 로그 레벨
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
+      # Google Sheets Sync (Issue #49)
+      - SHEETS_SYNC_ENABLED=${SHEETS_SYNC_ENABLED:-false}
+      - CREDENTIALS_PATH=/app/config/gcp-service-account.json
+      - SPREADSHEET_ID=${SPREADSHEET_ID:-}
+      - ARCHIVE_SHEET_ID=${ARCHIVE_SHEET_ID:-}
+
     volumes:
       # 로컬 데이터 디렉토리
       - ${HOST_DATA_DIR:-./data}:/app/data:rw
 
       # NAS 마운트 (선택 - 호스트에서 마운트한 경우)
       - ${NAS_MOUNT_PATH:-/mnt/nas}:/nas:ro
+
+      # GCP 서비스 계정 (Sheets 동기화용)
+      - ${GCP_CONFIG_PATH:-./config}:/app/config:ro
 
     # 모드 선택: web, sync, track, all
     command: all
