@@ -323,7 +323,7 @@ def get_matching_items(
     per_page: int = 20,
     status_filter: Optional[str] = None,
 ) -> tuple:
-    """1:1 매칭 아이템 목록 조회"""
+    """1:1 매칭 아이템 목록 조회 (필터 및 페이지네이션 수정)"""
     items = []
     total = 0
     summary = {"synced": 0, "not_synced": 0, "synced_with_duplicates": 0}
@@ -357,20 +357,14 @@ def get_matching_items(
         )
         duplicate_filenames = {row[0] for row in cursor.fetchall()}
 
-        # 전체 파일 수
-        cursor = conn_archive.execute("SELECT COUNT(*) FROM files")
-        total = cursor.fetchone()[0]
-
-        # 페이지네이션
-        offset = (page - 1) * per_page
+        # 모든 파일 조회 (필터링 및 페이지네이션을 메모리에서 처리)
         cursor = conn_archive.execute(
             """SELECT id, path, filename, file_type, size_bytes
                FROM files
-               ORDER BY id
-               LIMIT ? OFFSET ?""",
-            (per_page, offset),
+               ORDER BY id"""
         )
 
+        all_items = []
         for row in cursor.fetchall():
             source_id, path, filename, file_type, size_bytes = row
 
@@ -392,10 +386,6 @@ def get_matching_items(
             else:
                 status = "not_synced"
                 summary["not_synced"] += 1
-
-            # 필터 적용
-            if status_filter and status != status_filter:
-                continue
 
             item = {
                 "status": status,
@@ -422,7 +412,20 @@ def get_matching_items(
             else:
                 item["duplicates"] = []
 
-            items.append(item)
+            all_items.append(item)
+
+        # 필터 적용 (필터링 후 total 계산)
+        if status_filter:
+            filtered_items = [item for item in all_items if item["status"] == status_filter]
+        else:
+            filtered_items = all_items
+
+        # 필터 적용 후 total 계산
+        total = len(filtered_items)
+
+        # 페이지네이션 적용
+        offset = (page - 1) * per_page
+        items = filtered_items[offset : offset + per_page]
 
     except Exception as e:
         logger.error(f"매칭 아이템 조회 오류: {e}")

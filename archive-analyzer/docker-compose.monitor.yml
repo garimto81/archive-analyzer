@@ -51,6 +51,9 @@ services:
       # 로컬 데이터 디렉토리
       - ${HOST_DATA_DIR:-./data}:/app/data:rw
 
+      # pokervod.db (OTT 마스터 DB)
+      - ${POKERVOD_DB_PATH:-D:/AI/claude01/qwen_hand_analysis/data/pokervod.db}:/app/data/pokervod.db:rw
+
       # NAS 마운트 (선택 - 호스트에서 마운트한 경우)
       - ${NAS_MOUNT_PATH:-/mnt/nas}:/nas:ro
 
