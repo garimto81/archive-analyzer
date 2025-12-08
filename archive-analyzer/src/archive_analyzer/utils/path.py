@@ -154,3 +154,75 @@ def get_extension(path: str, with_dot: bool = True) -> Optional[str]:
         ext = filename.rsplit(".", 1)[-1].lower()
         return f".{ext}" if with_dot else ext
     return None
+
+
+def normalize_unc_path(path: str, use_forward_slash: bool = True) -> str:
+    """UNC 경로 정규화: 슬래시 통일
+
+    Issue #52: NAS 경로는 슬래시로 통일해야 pokervod.db와 매칭됩니다.
+
+    Args:
+        path: UNC 경로 (예: //10.10.100.122/docker/GGPNAs/ARCHIVE/...)
+        use_forward_slash: True면 슬래시(/), False면 백슬래시(\\)
+
+    Returns:
+        슬래시로 통일된 UNC 경로
+
+    Examples:
+        >>> normalize_unc_path("\\\\10.10.100.122\\docker/GGPNAs/ARCHIVE\\file.mp4")
+        '//10.10.100.122/docker/GGPNAs/ARCHIVE/file.mp4'
+        >>> normalize_unc_path("//10.10.100.122/docker/GGPNAs/ARCHIVE/file.mp4", use_forward_slash=False)
+        '\\\\10.10.100.122\\docker\\GGPNAs\\ARCHIVE\\file.mp4'
+    """
+    if not path:
+        return ""
+
+    if use_forward_slash:
+        # 백슬래시를 슬래시로 변환
+        normalized = path.replace("\\", "/")
+
+        # UNC 경로 prefix 보장 (//server/share)
+        if normalized.startswith("/") and not normalized.startswith("//"):
+            normalized = "/" + normalized
+    else:
+        # 슬래시를 백슬래시로 변환
+        normalized = path.replace("/", "\\")
+
+        # UNC 경로 prefix 보장 (\\server\share)
+        if normalized.startswith("\\") and not normalized.startswith("\\\\"):
+            normalized = "\\" + normalized
+
+    return normalized
+
+
+def build_unc_path(server: str, share: str, *parts: str, use_forward_slash: bool = True) -> str:
+    """UNC 경로 생성
+
+    Args:
+        server: 서버 주소 (예: 10.10.100.122)
+        share: 공유 이름 (예: docker)
+        *parts: 추가 경로 부분들
+        use_forward_slash: True면 슬래시(/), False면 백슬래시(\\)
+
+    Returns:
+        UNC 경로 (예: //10.10.100.122/docker/GGPNAs/ARCHIVE)
+
+    Examples:
+        >>> build_unc_path("10.10.100.122", "docker", "GGPNAs", "ARCHIVE")
+        '//10.10.100.122/docker/GGPNAs/ARCHIVE'
+    """
+    sep = "/" if use_forward_slash else "\\"
+    prefix = "//" if use_forward_slash else "\\\\"
+
+    # 서버와 공유로 기본 UNC 경로 생성
+    base = f"{prefix}{server}{sep}{share}"
+
+    # 추가 경로 부분 조합
+    for part in parts:
+        if part:
+            # 슬래시/백슬래시 정리
+            clean_part = part.replace("/", sep).replace("\\", sep).strip(sep)
+            if clean_part:
+                base = f"{base}{sep}{clean_part}"
+
+    return base

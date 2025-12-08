@@ -10,6 +10,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **스키마 변경 시 문서 필수** | 변경 시 `docs/DATABASE_SCHEMA.md` + `DATABASE_UNIFICATION.md` 동기화 |
 | **FFprobe 필수** | 미디어 추출 기능에 시스템 PATH의 ffprobe 필요 |
 | **Python 3.10+** | 최소 요구 버전 |
+| **NAS 경로 정규화** | UNC 경로는 슬래시(/)로 통일 - pokervod.db 기준 (Issue #52) |
+
+### NAS 경로 정규화 규칙
+
+```
+✅ 올바른 형식: //10.10.100.122/docker/GGPNAs/ARCHIVE/파일.mp4
+❌ 잘못된 형식: \\10.10.100.122\docker/GGPNAs/ARCHIVE\파일.mp4
+```
+
+| 규칙 | 설명 |
+|------|------|
+| UNC prefix | `//server/share` (슬래시 2개) |
+| 경로 구분자 | `/` (슬래시만 사용) |
+| 슬래시 혼용 금지 | `normalize_unc_path()` 사용 필수 |
 
 ## Project Overview
 
@@ -218,6 +232,32 @@ python scripts/start_admin.py  # 관리 서버 시작 (IP 자동 감지)
 | `/auth/login` | Google OAuth Login |
 | `/docs` | API Documentation |
 
+### DB 네트워크 공유 (Issue #53)
+
+로컬 네트워크에서 DB 접근 가능하도록 Datasette + sqlite-web 제공:
+
+```powershell
+# DB 서비스 시작 (profile: db)
+docker-compose -f docker-compose.monitor.yml --profile db up -d
+
+# 전체 서비스 (기본 + DB)
+docker-compose -f docker-compose.monitor.yml --profile db up -d
+```
+
+| 서비스 | 포트 | URL | 용도 |
+|--------|------|-----|------|
+| **Datasette** | 8001 | `http://<IP>:8001` | 데이터 탐색 + REST API (읽기) |
+| **sqlite-web** | 8002 | `http://<IP>:8002` | Admin UI + 쿼리 실행 |
+
+**Datasette API 예시**:
+```bash
+# 테이블 목록
+curl http://localhost:8001/archive.json
+
+# SQL 쿼리
+curl "http://localhost:8001/archive.json?sql=SELECT+*+FROM+files+LIMIT+10"
+```
+
 ## Streaming Compatibility
 
 OTT 호환 판정 기준 (`ReportGenerator`):
@@ -230,6 +270,7 @@ OTT 호환 판정 기준 (`ReportGenerator`):
 | 문서 | 설명 |
 |------|------|
 | `docs/DATABASE_SCHEMA.md` | DB 스키마 및 연동 관계 (**스키마 변경 시 필수 업데이트**) |
+| `docs/SHEETS_SCHEMA.md` | Google Sheets 구조 및 동기화 (**시트 탭/컬럼 정의**) |
 | `docs/archive_structure.md` | 아카이브 폴더 구조 및 태그 스키마 |
 | `docs/MAM_SOLUTIONS_RESEARCH.md` | 오픈소스 MAM 솔루션 비교 |
 
@@ -242,4 +283,5 @@ OTT 호환 판정 기준 (`ReportGenerator`):
 | Phase 2.5: Admin UI | ✅ | Google OAuth, User Management |
 | Phase 2.6: Google Sheets 동기화 | ✅ | sheets_sync, Docker |
 | Phase 2.7: 멀티 카탈로그 + 추천 | ✅ | N:N 관계, 정수 PK 마이그레이션 |
+| Phase 2.8: DB 네트워크 공유 | ✅ | Datasette + sqlite-web (#53) |
 | Phase 3: AI 기능 | 🔜 | Whisper, YOLOv8, Gorse 연동 |

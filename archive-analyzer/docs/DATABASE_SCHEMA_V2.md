@@ -1,7 +1,50 @@
 # Database Schema V2 (Simplified)
 
-> **Version**: 2.0.0
-> **Status**: 설계 완료, 마이그레이션 예정
+> **Version**: 2.1.0
+> **Status**: Phase 1-3 완료
+> **Last Updated**: 2025-12-08
+
+---
+
+## 구현 상태 (Implementation Status)
+
+| Phase | 항목 | 상태 | 이슈 |
+|-------|------|------|------|
+| **Phase 1** | catalogs → subcatalogs 연결 | ✅ 완료 | - |
+| **Phase 1** | INTEGER PK + code 분리 | ⚠️ 부분 (VARCHAR PK 유지) | - |
+| **Phase 2** | files.subcatalog_id 추가 | ✅ 완료 | #47 |
+| **Phase 2** | subcatalogs.file_count 동기화 | ✅ 완료 | #47 |
+| **Phase 3** | home_rows 동적 시스템 | ✅ 완료 | #183 |
+| **Phase 3** | Backend API (`/ott/home/rows`) | ✅ 완료 | #183 |
+| **Phase 3** | Frontend 동적 렌더링 | ✅ 완료 | #183 |
+| **Phase 3** | Admin UI (CRUD) | ⏳ 미구현 | #183 |
+
+### 현재 DB 현황 (2025-12-08)
+
+```
+catalogs:     6개
+subcatalogs:  24개 (file_count 동기화됨)
+files:        4835개 (52% subcatalog_id 매핑)
+home_rows:    10개 (Backend API 연동 완료)
+```
+
+### Phase 3 구현 상세 (Issue #183)
+
+**Backend**: `backend/api/routes/ott/home.py`
+- `GET /ott/home/rows` - 동적 row 설정 조회 (items 포함 옵션)
+- `GET /ott/home/rows/{row_id}/items` - 개별 row 아이템 조회 (pagination)
+
+**Frontend**: `frontend/components/home/DynamicHomeRow.tsx`
+- row_type별 컴포넌트 레지스트리 기반 동적 렌더링
+- Fallback: API 실패 시 기존 하드코딩 방식
+
+**row_type 지원**:
+- `continue`: 이어 시청하기 (ContinueWatchingRow)
+- `trending`: 인기/트렌딩 (VideoCarousel)
+- `category`: 카테고리 기반 (recent, popular, highlights)
+- `catalog`: 특정 카탈로그 (CatalogVideosRow)
+- `subcatalog`: 특정 서브카탈로그 (SubCatalogVideosRow)
+- `personalized`: 개인화 추천 (RecommendationsRow)
 
 ## 핵심 변경 사항
 

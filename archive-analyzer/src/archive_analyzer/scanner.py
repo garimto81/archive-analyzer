@@ -18,6 +18,7 @@ from .config import AnalyzerConfig
 from .database import Database, FileRecord, ScanCheckpoint
 from .file_classifier import classify_file
 from .smb_connector import FileInfo, SMBConnector
+from .utils.path import normalize_unc_path
 
 logger = logging.getLogger(__name__)
 
@@ -136,12 +137,18 @@ class ArchiveScanner:
         return count
 
     def _file_info_to_record(self, info: FileInfo) -> FileRecord:
-        """FileInfo를 FileRecord로 변환"""
+        """FileInfo를 FileRecord로 변환
+
+        Issue #52: UNC 경로 정규화 (백슬래시 통일)
+        """
         file_type = classify_file(info.name)
-        parent = os.path.dirname(info.path)
+
+        # UNC 경로 정규화 (슬래시 혼용 방지)
+        normalized_path = normalize_unc_path(info.path)
+        parent = os.path.dirname(normalized_path)
 
         return FileRecord(
-            path=info.path,
+            path=normalized_path,
             filename=info.name,
             extension=info.extension,
             size_bytes=info.size,

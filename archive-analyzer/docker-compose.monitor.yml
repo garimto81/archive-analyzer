@@ -1,12 +1,16 @@
 # NAS Auto Sync with Web Monitoring
 # Issue #43: Docker 서버 배포 + GUI 모니터링
+# Issue #53: DB 컨테이너화 및 로컬 네트워크 공유
 #
 # Usage:
 #   docker-compose -f docker-compose.monitor.yml up -d
 #   docker-compose -f docker-compose.monitor.yml logs -f
+#   docker-compose -f docker-compose.monitor.yml --profile db up -d  # DB 서비스 포함
 #
 # Access:
-#   http://localhost:8080 - Web Dashboard
+#   http://localhost:8080 - Web Dashboard (NAS Sync Monitor)
+#   http://localhost:8001 - Datasette (데이터 탐색 + REST API)
+#   http://localhost:8002 - sqlite-web (Admin UI)
 
 version: "3.8"
 
@@ -41,12 +45,25 @@ services:
       # 로그 레벨
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
 
+      # Google Sheets Sync (Issue #49)
+      - SHEETS_SYNC_ENABLED=${SHEETS_SYNC_ENABLED:-false}
+      - CREDENTIALS_PATH=/app/config/gcp-service-account.json
+      - SPREADSHEET_ID=${SPREADSHEET_ID:-}
+      - ARCHIVE_SHEET_ID=${ARCHIVE_SHEET_ID:-}
+
     volumes:
       # 로컬 데이터 디렉토리
       - ${HOST_DATA_DIR:-./data}:/app/data:rw
 
+      # pokervod.db (OTT 마스터 DB)
+      - ${POKERVOD_DB_PATH:-D:/AI/claude01/qwen_hand_analysis/data/pokervod.db}:/app/data/pokervod.db:rw
+
       # NAS 마운트 (선택 - 호스트에서 마운트한 경우)
       - ${NAS_MOUNT_PATH:-/mnt/nas}:/nas:ro
+
+      # GCP 서비스 계정 (Sheets 동기화용)
+      # 기본값: D:/AI/claude01/archive-analyzer/config (기존 sheets_sync.py 설정)
+      - ${GCP_CONFIG_PATH:-D:/AI/claude01/archive-analyzer/config}:/app/config:ro
 
     # 모드 선택: web, sync, track, all
     command: all
@@ -87,6 +104,72 @@ services:
       - MEILI_ENV=${MEILI_ENV:-development}
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-nas-sync-dev-key}
       - MEILI_NO_ANALYTICS=true
+
+    networks:
+      - nas-sync-network
+
+  # ==========================================================================
+  # Datasette - 데이터 탐색 + REST API (Issue #53)
+  # ==========================================================================
+  datasette:
+    image: datasetteproject/datasette:latest
+    container_name: nas-sync-datasette
+    restart: unless-stopped
+    profiles:
+      - db
+
+    ports:
+      - "${DATASETTE_PORT:-8001}:8001"
+
+    volumes:
+      # archive.db (읽기 전용)
+      - ${HOST_DATA_DIR:-./data}/output/archive.db:/data/archive.db:ro
+      # pokervod.db (읽기 전용)
+      - ${POKERVOD_DB_PATH:-D:/AI/claude01/shared-data/pokervod.db}:/data/pokervod.db:ro
+
+    command: >
+      datasette /data/archive.db /data/pokervod.db
+      -h 0.0.0.0 -p 8001
+      --cors
+      --setting sql_time_limit_ms 5000
+      --setting max_returned_rows 1000
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8001/-/versions.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - nas-sync-network
+
+  # ==========================================================================
+  # sqlite-web - Admin UI (Issue #53)
+  # ==========================================================================
+  sqlite-admin:
+    image: coleifer/sqlite-web
+    container_name: nas-sync-sqlite-admin
+    restart: unless-stopped
+    profiles:
+      - db
+
+    ports:
+      - "${SQLITE_ADMIN_PORT:-8002}:8080"
+
+    volumes:
+      # archive.db (읽기/쓰기)
+      - ${HOST_DATA_DIR:-./data}/output/archive.db:/data/archive.db:rw
+
+    command: ["sqlite_web", "--host", "0.0.0.0", "--read-only", "/data/archive.db"]
+    # --read-only: 읽기 전용 모드 (보안). 쓰기 필요 시 제거
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
 
     networks:
       - nas-sync-network

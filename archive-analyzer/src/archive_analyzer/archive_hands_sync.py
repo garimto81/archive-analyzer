@@ -41,8 +41,12 @@ class ArchiveSyncConfig:
                 "D:/AI/claude01/archive-analyzer/config/gcp-service-account.json",
             )
         if self.db_path is None:
+            # Docker: POKERVOD_DB, 로컬: DB_PATH 순서로 확인
             self.db_path = os.environ.get(
-                "DB_PATH", "D:/AI/claude01/qwen_hand_analysis/data/pokervod.db"
+                "POKERVOD_DB",
+                os.environ.get(
+                    "DB_PATH", "D:/AI/claude01/shared-data/pokervod.db"
+                )
             )
 
 
