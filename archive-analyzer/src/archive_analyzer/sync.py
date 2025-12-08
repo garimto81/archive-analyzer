@@ -30,7 +30,7 @@ class SyncConfig:
     """동기화 설정"""
 
     archive_db: str = "data/output/archive.db"
-    pokervod_db: str = "d:/AI/claude01/qwen_hand_analysis/data/pokervod.db"
+    pokervod_db: str = "D:/AI/claude01/shared-data/pokervod.db"  # 통합 DB (DATABASE_UNIFICATION.md)
 
     # NAS 경로 변환
     nas_prefix: str = "//10.10.100.122/docker/GGPNAs/ARCHIVE"
