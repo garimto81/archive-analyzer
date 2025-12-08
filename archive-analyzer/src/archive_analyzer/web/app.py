@@ -584,18 +584,22 @@ def _build_folder_tree(
     if not files:
         return []
 
-    # 1. 폴더별 파일 수집
+    # 1. 폴더별 파일 수집 (path에서 폴더 추출 - parent_folder가 부정확할 수 있음)
     folder_files: Dict[str, List[Dict]] = {}  # folder_path -> [file_info, ...]
 
     for file_id, path, filename, size_bytes, parent_folder in files:
-        if not parent_folder:
-            parent_folder = "/"
+        # path에서 직접 폴더 경로 추출 (parent_folder 대신)
+        # path 형식: //10.10.100.122/docker/GGPNAs/ARCHIVE/CATALOG/FOLDER/file.mp4
+        if "/" in path:
+            folder_path = "/".join(path.split("/")[:-1])  # 파일명 제외
+        else:
+            folder_path = parent_folder if parent_folder else "/"
 
-        if parent_folder not in folder_files:
-            folder_files[parent_folder] = []
+        if folder_path not in folder_files:
+            folder_files[folder_path] = []
 
         is_synced = filename in pokervod_files
-        folder_files[parent_folder].append({
+        folder_files[folder_path].append({
             "id": file_id,
             "name": filename,
             "path": path,
@@ -632,6 +636,30 @@ def _build_folder_tree(
         # 파일 통계
         synced = sum(1 for f in file_list if f["status"] == "synced")
         not_synced = len(file_list) - synced
+
+        # 루트 폴더에 직접 있는 파일 처리 (하위 폴더 없음)
+        if not parts:
+            # "(root)" 가상 노드 생성
+            root_key = "(root)"
+            if root_key not in tree_dict:
+                tree_dict[root_key] = {
+                    "type": "folder",
+                    "name": "(루트 폴더)",
+                    "path": folder_path,
+                    "depth": 1,
+                    "children": {},
+                    "files": file_list,
+                    "synced": synced,
+                    "not_synced": not_synced,
+                    "total_files": len(file_list),
+                }
+            else:
+                # 이미 존재하면 파일 추가
+                tree_dict[root_key]["files"].extend(file_list)
+                tree_dict[root_key]["synced"] += synced
+                tree_dict[root_key]["not_synced"] += not_synced
+                tree_dict[root_key]["total_files"] += len(file_list)
+            continue
 
         # 현재 폴더 노드 생성
         current_path = ""
