@@ -238,9 +238,45 @@ docker exec -it nas-sync-monitor ls /nas
 
 ---
 
+## HLS 스트리밍 필터링
+
+Docker HLS 스트리밍을 위해 호환되는 파일만 동기화합니다.
+
+### HLS 호환 포맷
+
+| 포맷 | 지원 |
+|------|------|
+| MP4, MOV, TS, M4V | ✅ HLS 호환 |
+| MXF, WebM, MKV, AVI | ❌ 트랜스코딩 필요 |
+
+### HLS 전용 동기화
+
+```powershell
+# HLS 호환 파일만 동기화
+python scripts/sync_to_pokervod.py --archive-db archive.db --hls-only
+
+# 시뮬레이션
+python scripts/sync_to_pokervod.py --archive-db archive.db --hls-only --dry-run
+```
+
+### 현재 상태
+
+| 항목 | 값 |
+|------|-----|
+| pokervod.db 파일 | 1,803개 |
+| MP4 | 1,274개 |
+| MOV | 529개 |
+| 제외된 비-HLS | 226개 (2,629 GB) |
+| 제외된 중복 | 2,195개 |
+
+자세한 내용: [EXCLUDED_FILES.md](./EXCLUDED_FILES.md)
+
+---
+
 ## 참조
 
 - Issue #41: NAS 경로 변경 실시간 감지
 - Issue #43: Docker + GUI + 패키징
+- [EXCLUDED_FILES.md](./EXCLUDED_FILES.md): 제외된 파일 목록
 - [FastAPI 문서](https://fastapi.tiangolo.com/)
 - [PyInstaller 문서](https://pyinstaller.org/)

@@ -24,6 +24,9 @@ from .utils.path import generate_file_id, normalize_path
 
 logger = logging.getLogger(__name__)
 
+# HLS 스트리밍 호환 확장자 (트랜스코딩 없이 재생 가능)
+HLS_COMPATIBLE_EXTENSIONS = ("mp4", "mov", "ts", "m4v", "m2ts", "mts")
+
 
 @dataclass
 class SyncConfig:
@@ -38,6 +41,9 @@ class SyncConfig:
 
     # 기본 분석 상태
     default_analysis_status: str = "pending"
+
+    # HLS 호환 파일만 동기화 (mp4, mov, ts 등)
+    hls_only: bool = False
 
 
 @dataclass
@@ -236,8 +242,20 @@ class SyncService:
         try:
             # archive.db에서 비디오 파일 조회 (media_info 조인)
             src_cursor = src_conn.cursor()
+
+            # HLS 필터링 조건 생성
+            if self.config.hls_only:
+                # HLS 호환 확장자만 필터링
+                ext_conditions = " OR ".join(
+                    f"LOWER(f.path) LIKE '%.{ext}'" for ext in HLS_COMPATIBLE_EXTENSIONS
+                )
+                hls_filter = f"AND ({ext_conditions})"
+                logger.info(f"HLS 호환 파일만 동기화: {HLS_COMPATIBLE_EXTENSIONS}")
+            else:
+                hls_filter = ""
+
             src_cursor.execute(
-                """
+                f"""
                 SELECT
                     f.path,
                     f.filename,
@@ -251,6 +269,7 @@ class SyncService:
                 FROM files f
                 LEFT JOIN media_info m ON f.id = m.file_id
                 WHERE f.file_type = 'video'
+                {hls_filter}
             """
             )
 

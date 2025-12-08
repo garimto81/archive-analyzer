@@ -51,6 +51,11 @@ def main():
         action="store_true",
         help="카탈로그만 동기화 (파일 건너뜀)",
     )
+    parser.add_argument(
+        "--hls-only",
+        action="store_true",
+        help="HLS 호환 파일만 동기화 (mp4, mov, ts 등)",
+    )
 
     args = parser.parse_args()
 
@@ -58,6 +63,7 @@ def main():
     config = SyncConfig(
         archive_db=args.archive_db,
         pokervod_db=args.pokervod_db,
+        hls_only=args.hls_only,
     )
 
     # 서비스 초기화

@@ -14,6 +14,7 @@ from archive_analyzer.sync import (
     SyncResult,
     SyncService,
     SubcatalogMatch,
+    HLS_COMPATIBLE_EXTENSIONS,
     generate_file_id,
     classify_path,
     classify_path_multilevel,
@@ -441,3 +442,158 @@ class TestSyncService:
         assert "files" in results
         assert results["catalogs"].inserted >= 1
         assert results["files"].inserted == 1
+
+
+class TestHLSFiltering:
+    """HLS 필터링 테스트 (Issue #43)"""
+
+    def test_hls_compatible_extensions_constant(self):
+        """HLS 호환 확장자 상수 확인"""
+        assert "mp4" in HLS_COMPATIBLE_EXTENSIONS
+        assert "mov" in HLS_COMPATIBLE_EXTENSIONS
+        assert "ts" in HLS_COMPATIBLE_EXTENSIONS
+        assert "m4v" in HLS_COMPATIBLE_EXTENSIONS
+        # 비호환 확장자는 포함되지 않음
+        assert "mxf" not in HLS_COMPATIBLE_EXTENSIONS
+        assert "mkv" not in HLS_COMPATIBLE_EXTENSIONS
+        assert "webm" not in HLS_COMPATIBLE_EXTENSIONS
+        assert "avi" not in HLS_COMPATIBLE_EXTENSIONS
+
+    def test_sync_config_hls_only_default(self):
+        """SyncConfig hls_only 기본값 확인"""
+        config = SyncConfig()
+        assert config.hls_only is False
+
+    def test_sync_config_hls_only_enabled(self):
+        """SyncConfig hls_only 활성화"""
+        config = SyncConfig(hls_only=True)
+        assert config.hls_only is True
+
+
+@pytest.fixture
+def temp_archive_db_with_mixed_formats():
+    """HLS/비-HLS 혼합 archive.db 생성"""
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY,
+            path TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            extension TEXT,
+            size_bytes INTEGER,
+            file_type TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE media_info (
+            id INTEGER PRIMARY KEY,
+            file_id INTEGER,
+            video_codec TEXT,
+            width INTEGER,
+            height INTEGER,
+            duration_seconds REAL,
+            framerate REAL,
+            bitrate INTEGER
+        )
+    """)
+
+    # HLS 호환 파일
+    test_files = [
+        (1, "Z:/ARCHIVE/test1.mp4", "test1.mp4", ".mp4", 1000000, "video"),
+        (2, "Z:/ARCHIVE/test2.mov", "test2.mov", ".mov", 2000000, "video"),
+        (3, "Z:/ARCHIVE/test3.ts", "test3.ts", ".ts", 500000, "video"),
+        # 비-HLS 파일
+        (4, "Z:/ARCHIVE/test4.mxf", "test4.mxf", ".mxf", 3000000, "video"),
+        (5, "Z:/ARCHIVE/test5.mkv", "test5.mkv", ".mkv", 1500000, "video"),
+        (6, "Z:/ARCHIVE/test6.webm", "test6.webm", ".webm", 800000, "video"),
+        (7, "Z:/ARCHIVE/test7.avi", "test7.avi", ".avi", 900000, "video"),
+    ]
+
+    for fid, path, filename, ext, size, ftype in test_files:
+        cursor.execute(
+            "INSERT INTO files VALUES (?, ?, ?, ?, ?, ?)",
+            (fid, path, filename, ext, size, ftype)
+        )
+        cursor.execute(
+            "INSERT INTO media_info (id, file_id, video_codec, width, height) VALUES (?, ?, 'h264', 1920, 1080)",
+            (fid, fid)
+        )
+
+    conn.commit()
+    conn.close()
+
+    yield db_path
+
+    Path(db_path).unlink(missing_ok=True)
+
+
+class TestHLSFilteringSync:
+    """HLS 필터링 동기화 테스트"""
+
+    def test_sync_without_hls_filter(self, temp_archive_db_with_mixed_formats, temp_pokervod_db):
+        """HLS 필터 없이 동기화 - 모든 파일 동기화됨"""
+        config = SyncConfig(
+            archive_db=temp_archive_db_with_mixed_formats,
+            pokervod_db=temp_pokervod_db,
+            hls_only=False,
+        )
+        service = SyncService(config)
+        result = service.sync_files(dry_run=False)
+
+        # 모든 7개 파일이 동기화됨
+        assert result.inserted == 7
+
+    def test_sync_with_hls_filter(self, temp_archive_db_with_mixed_formats, temp_pokervod_db):
+        """HLS 필터 활성화 - HLS 호환 파일만 동기화됨"""
+        config = SyncConfig(
+            archive_db=temp_archive_db_with_mixed_formats,
+            pokervod_db=temp_pokervod_db,
+            hls_only=True,
+        )
+        service = SyncService(config)
+        result = service.sync_files(dry_run=False)
+
+        # mp4, mov, ts만 동기화 (3개)
+        assert result.inserted == 3
+
+        # 실제 DB 확인
+        conn = sqlite3.connect(temp_pokervod_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT filename FROM files ORDER BY filename")
+        filenames = [row[0] for row in cursor.fetchall()]
+        conn.close()
+
+        assert "test1.mp4" in filenames
+        assert "test2.mov" in filenames
+        assert "test3.ts" in filenames
+        # 비-HLS 파일은 없어야 함
+        assert "test4.mxf" not in filenames
+        assert "test5.mkv" not in filenames
+        assert "test6.webm" not in filenames
+        assert "test7.avi" not in filenames
+
+    def test_sync_hls_filter_dry_run(self, temp_archive_db_with_mixed_formats, temp_pokervod_db):
+        """HLS 필터 dry-run 테스트"""
+        config = SyncConfig(
+            archive_db=temp_archive_db_with_mixed_formats,
+            pokervod_db=temp_pokervod_db,
+            hls_only=True,
+        )
+        service = SyncService(config)
+        result = service.sync_files(dry_run=True)
+
+        # dry-run에서도 HLS 파일만 카운트
+        assert result.inserted == 3
+
+        # 실제 DB에는 기록 없음
+        conn = sqlite3.connect(temp_pokervod_db)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM files")
+        assert cursor.fetchone()[0] == 0
+        conn.close()
