@@ -10,20 +10,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **스키마 변경 시 문서 필수** | 변경 시 `docs/DATABASE_SCHEMA.md` + `DATABASE_UNIFICATION.md` 동기화 |
 | **FFprobe 필수** | 미디어 추출 기능에 시스템 PATH의 ffprobe 필요 |
 | **Python 3.10+** | 최소 요구 버전 |
-| **NAS 경로 정규화** | UNC 경로는 백슬래시로 통일 (Issue #52) |
+| **NAS 경로 정규화** | UNC 경로는 슬래시(/)로 통일 - pokervod.db 기준 (Issue #52) |
 
 ### NAS 경로 정규화 규칙
 
 ```
-✅ 올바른 형식: \\10.10.100.122\docker\GGPNAs\ARCHIVE\파일.mp4
+✅ 올바른 형식: //10.10.100.122/docker/GGPNAs/ARCHIVE/파일.mp4
 ❌ 잘못된 형식: \\10.10.100.122\docker/GGPNAs/ARCHIVE\파일.mp4
 ```
 
 | 규칙 | 설명 |
 |------|------|
-| UNC prefix | `\\server\share` (백슬래시 2개) |
-| 경로 구분자 | `\` (백슬래시만 사용) |
-| 슬래시 혼용 금지 | `os.path.join` 사용 시 정규화 필수 |
+| UNC prefix | `//server/share` (슬래시 2개) |
+| 경로 구분자 | `/` (슬래시만 사용) |
+| 슬래시 혼용 금지 | `normalize_unc_path()` 사용 필수 |
 
 ## Project Overview
 
