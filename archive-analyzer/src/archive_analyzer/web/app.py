@@ -76,6 +76,10 @@ class ServiceState:
     connected_clients: List[WebSocket] = field(default_factory=list)
     config: WebConfig = field(default_factory=WebConfig)
 
+    # Issue #49: Google Sheets 동기화 연동 (Optional)
+    # ISheetsSync Protocol을 구현하는 어댑터 (None이면 비활성화)
+    sheets_sync: Optional[Any] = None  # Type: Optional[ISheetsSync]
+
 
 state = ServiceState()
 
@@ -319,7 +323,7 @@ def get_matching_items(
     per_page: int = 20,
     status_filter: Optional[str] = None,
 ) -> tuple:
-    """1:1 매칭 아이템 목록 조회"""
+    """1:1 매칭 아이템 목록 조회 (필터 및 페이지네이션 수정)"""
     items = []
     total = 0
     summary = {"synced": 0, "not_synced": 0, "synced_with_duplicates": 0}
@@ -353,20 +357,14 @@ def get_matching_items(
         )
         duplicate_filenames = {row[0] for row in cursor.fetchall()}
 
-        # 전체 파일 수
-        cursor = conn_archive.execute("SELECT COUNT(*) FROM files")
-        total = cursor.fetchone()[0]
-
-        # 페이지네이션
-        offset = (page - 1) * per_page
+        # 모든 파일 조회 (필터링 및 페이지네이션을 메모리에서 처리)
         cursor = conn_archive.execute(
             """SELECT id, path, filename, file_type, size_bytes
                FROM files
-               ORDER BY id
-               LIMIT ? OFFSET ?""",
-            (per_page, offset),
+               ORDER BY id"""
         )
 
+        all_items = []
         for row in cursor.fetchall():
             source_id, path, filename, file_type, size_bytes = row
 
@@ -388,10 +386,6 @@ def get_matching_items(
             else:
                 status = "not_synced"
                 summary["not_synced"] += 1
-
-            # 필터 적용
-            if status_filter and status != status_filter:
-                continue
 
             item = {
                 "status": status,
@@ -418,7 +412,20 @@ def get_matching_items(
             else:
                 item["duplicates"] = []
 
-            items.append(item)
+            all_items.append(item)
+
+        # 필터 적용 (필터링 후 total 계산)
+        if status_filter:
+            filtered_items = [item for item in all_items if item["status"] == status_filter]
+        else:
+            filtered_items = all_items
+
+        # 필터 적용 후 total 계산
+        total = len(filtered_items)
+
+        # 페이지네이션 적용
+        offset = (page - 1) * per_page
+        items = filtered_items[offset : offset + per_page]
 
     except Exception as e:
         logger.error(f"매칭 아이템 조회 오류: {e}")
@@ -622,6 +629,9 @@ async def lifespan(app: FastAPI):
     ws_handler = WebSocketLogHandler(state)
     logging.getLogger("archive_analyzer").addHandler(ws_handler)
 
+    # Issue #49: Sheets 동기화 어댑터 초기화 (선택적)
+    state.sheets_sync = _create_sheets_adapter()
+
     logger.info(f"Web 모니터링 서버 시작: http://{state.config.host}:{state.config.port}")
 
     yield
@@ -629,6 +639,32 @@ async def lifespan(app: FastAPI):
     # Shutdown
     state.is_running = False
     logger.info("Web 모니터링 서버 종료")
+
+
+def _create_sheets_adapter():
+    """Sheets 어댑터 생성 (선택적 초기화)
+
+    Issue #49: Google Sheets 동기화 웹 대시보드 연동
+
+    환경변수 SHEETS_SYNC_ENABLED=true 일 때만 활성화됩니다.
+    초기화 실패 시 None을 반환하며, 기존 기능에 영향을 주지 않습니다.
+    """
+    import os
+
+    if os.environ.get("SHEETS_SYNC_ENABLED", "").lower() not in ("true", "1", "yes"):
+        logger.info("Sheets 동기화 비활성화 (SHEETS_SYNC_ENABLED 미설정)")
+        return None
+
+    try:
+        from archive_analyzer.sheets_adapter import create_sheets_adapter
+
+        adapter = create_sheets_adapter()
+        if adapter:
+            logger.info("Sheets 동기화 어댑터 초기화 성공")
+        return adapter
+    except Exception as e:
+        logger.warning(f"Sheets 동기화 어댑터 초기화 실패: {e}")
+        return None
 
 
 def create_app() -> FastAPI:
@@ -821,6 +857,89 @@ def create_app() -> FastAPI:
             state.config.archive_db, state.config.pokervod_db
         )
         return {"catalogs": catalogs}
+
+    # =========================================================================
+    # Issue #49: Google Sheets 동기화 API
+    # =========================================================================
+
+    @app.get("/api/sheets/status")
+    async def get_sheets_status():
+        """Sheets 동기화 상태 조회
+
+        Returns:
+            enabled: Sheets 동기화 활성화 여부
+            status: 연결 상태, 마지막 동기화 시간 등
+        """
+        if not state.sheets_sync:
+            return {
+                "enabled": False,
+                "message": "Sheets sync not configured (set SHEETS_SYNC_ENABLED=true)",
+            }
+
+        status = state.sheets_sync.get_status()
+        return {
+            "enabled": True,
+            **status.to_dict(),
+        }
+
+    @app.post("/api/sheets/sync")
+    async def trigger_sheets_sync(
+        background_tasks: BackgroundTasks,
+        direction: str = "db_to_sheets",
+    ):
+        """Sheets 동기화 트리거
+
+        Args:
+            direction: 동기화 방향
+                - db_to_sheets: DB → Sheets
+                - sheets_to_db: Sheets → DB
+                - hands: Archive Sheet → hands 테이블
+                - bidirectional: 양방향 (Sheets 우선)
+        """
+        if not state.sheets_sync:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Sheets sync not configured (set SHEETS_SYNC_ENABLED=true)"},
+            )
+
+        if state.sync_in_progress:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "Another sync is already in progress"},
+            )
+
+        def run_sheets_sync():
+            state.sync_in_progress = True
+            try:
+                if direction == "db_to_sheets":
+                    result = state.sheets_sync.sync_to_sheets()
+                elif direction == "sheets_to_db":
+                    result = state.sheets_sync.sync_from_sheets()
+                elif direction == "hands":
+                    result = state.sheets_sync.sync_hands()
+                elif direction == "bidirectional":
+                    result = state.sheets_sync.sync_bidirectional()
+                else:
+                    logger.warning(f"Unknown sync direction: {direction}")
+                    return
+
+                state.last_sync_result = {
+                    "type": "sheets",
+                    **result.to_dict(),
+                }
+                logger.info(f"Sheets 동기화 완료: {direction}")
+            except Exception as e:
+                logger.error(f"Sheets 동기화 오류: {e}")
+                state.error_message = str(e)
+            finally:
+                state.sync_in_progress = False
+
+        background_tasks.add_task(run_sheets_sync)
+        return {
+            "message": f"Sheets sync started ({direction})",
+            "direction": direction,
+            "status": "started",
+        }
 
     @app.websocket("/ws/logs")
     async def websocket_logs(websocket: WebSocket):

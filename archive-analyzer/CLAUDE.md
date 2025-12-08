@@ -10,6 +10,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **스키마 변경 시 문서 필수** | 변경 시 `docs/DATABASE_SCHEMA.md` + `DATABASE_UNIFICATION.md` 동기화 |
 | **FFprobe 필수** | 미디어 추출 기능에 시스템 PATH의 ffprobe 필요 |
 | **Python 3.10+** | 최소 요구 버전 |
+| **NAS 경로 정규화** | UNC 경로는 백슬래시로 통일 (Issue #52) |
+
+### NAS 경로 정규화 규칙
+
+```
+✅ 올바른 형식: \\10.10.100.122\docker\GGPNAs\ARCHIVE\파일.mp4
+❌ 잘못된 형식: \\10.10.100.122\docker/GGPNAs/ARCHIVE\파일.mp4
+```
+
+| 규칙 | 설명 |
+|------|------|
+| UNC prefix | `\\server\share` (백슬래시 2개) |
+| 경로 구분자 | `\` (백슬래시만 사용) |
+| 슬래시 혼용 금지 | `os.path.join` 사용 시 정규화 필수 |
 
 ## Project Overview
 
@@ -230,6 +244,7 @@ OTT 호환 판정 기준 (`ReportGenerator`):
 | 문서 | 설명 |
 |------|------|
 | `docs/DATABASE_SCHEMA.md` | DB 스키마 및 연동 관계 (**스키마 변경 시 필수 업데이트**) |
+| `docs/SHEETS_SCHEMA.md` | Google Sheets 구조 및 동기화 (**시트 탭/컬럼 정의**) |
 | `docs/archive_structure.md` | 아카이브 폴더 구조 및 태그 스키마 |
 | `docs/MAM_SOLUTIONS_RESEARCH.md` | 오픈소스 MAM 솔루션 비교 |
 
