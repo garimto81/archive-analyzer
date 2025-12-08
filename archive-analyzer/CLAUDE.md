@@ -232,6 +232,32 @@ python scripts/start_admin.py  # 관리 서버 시작 (IP 자동 감지)
 | `/auth/login` | Google OAuth Login |
 | `/docs` | API Documentation |
 
+### DB 네트워크 공유 (Issue #53)
+
+로컬 네트워크에서 DB 접근 가능하도록 Datasette + sqlite-web 제공:
+
+```powershell
+# DB 서비스 시작 (profile: db)
+docker-compose -f docker-compose.monitor.yml --profile db up -d
+
+# 전체 서비스 (기본 + DB)
+docker-compose -f docker-compose.monitor.yml --profile db up -d
+```
+
+| 서비스 | 포트 | URL | 용도 |
+|--------|------|-----|------|
+| **Datasette** | 8001 | `http://<IP>:8001` | 데이터 탐색 + REST API (읽기) |
+| **sqlite-web** | 8002 | `http://<IP>:8002` | Admin UI + 쿼리 실행 |
+
+**Datasette API 예시**:
+```bash
+# 테이블 목록
+curl http://localhost:8001/archive.json
+
+# SQL 쿼리
+curl "http://localhost:8001/archive.json?sql=SELECT+*+FROM+files+LIMIT+10"
+```
+
 ## Streaming Compatibility
 
 OTT 호환 판정 기준 (`ReportGenerator`):
@@ -257,4 +283,5 @@ OTT 호환 판정 기준 (`ReportGenerator`):
 | Phase 2.5: Admin UI | ✅ | Google OAuth, User Management |
 | Phase 2.6: Google Sheets 동기화 | ✅ | sheets_sync, Docker |
 | Phase 2.7: 멀티 카탈로그 + 추천 | ✅ | N:N 관계, 정수 PK 마이그레이션 |
+| Phase 2.8: DB 네트워크 공유 | ✅ | Datasette + sqlite-web (#53) |
 | Phase 3: AI 기능 | 🔜 | Whisper, YOLOv8, Gorse 연동 |

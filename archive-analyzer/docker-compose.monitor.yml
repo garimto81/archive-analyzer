@@ -1,12 +1,16 @@
 # NAS Auto Sync with Web Monitoring
 # Issue #43: Docker 서버 배포 + GUI 모니터링
+# Issue #53: DB 컨테이너화 및 로컬 네트워크 공유
 #
 # Usage:
 #   docker-compose -f docker-compose.monitor.yml up -d
 #   docker-compose -f docker-compose.monitor.yml logs -f
+#   docker-compose -f docker-compose.monitor.yml --profile db up -d  # DB 서비스 포함
 #
 # Access:
-#   http://localhost:8080 - Web Dashboard
+#   http://localhost:8080 - Web Dashboard (NAS Sync Monitor)
+#   http://localhost:8001 - Datasette (데이터 탐색 + REST API)
+#   http://localhost:8002 - sqlite-web (Admin UI)
 
 version: "3.8"
 
@@ -100,6 +104,72 @@ services:
       - MEILI_ENV=${MEILI_ENV:-development}
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-nas-sync-dev-key}
       - MEILI_NO_ANALYTICS=true
+
+    networks:
+      - nas-sync-network
+
+  # ==========================================================================
+  # Datasette - 데이터 탐색 + REST API (Issue #53)
+  # ==========================================================================
+  datasette:
+    image: datasetteproject/datasette:latest
+    container_name: nas-sync-datasette
+    restart: unless-stopped
+    profiles:
+      - db
+
+    ports:
+      - "${DATASETTE_PORT:-8001}:8001"
+
+    volumes:
+      # archive.db (읽기 전용)
+      - ${HOST_DATA_DIR:-./data}/output/archive.db:/data/archive.db:ro
+      # pokervod.db (읽기 전용)
+      - ${POKERVOD_DB_PATH:-D:/AI/claude01/shared-data/pokervod.db}:/data/pokervod.db:ro
+
+    command: >
+      datasette /data/archive.db /data/pokervod.db
+      -h 0.0.0.0 -p 8001
+      --cors
+      --setting sql_time_limit_ms 5000
+      --setting max_returned_rows 1000
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8001/-/versions.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    networks:
+      - nas-sync-network
+
+  # ==========================================================================
+  # sqlite-web - Admin UI (Issue #53)
+  # ==========================================================================
+  sqlite-admin:
+    image: coleifer/sqlite-web
+    container_name: nas-sync-sqlite-admin
+    restart: unless-stopped
+    profiles:
+      - db
+
+    ports:
+      - "${SQLITE_ADMIN_PORT:-8002}:8080"
+
+    volumes:
+      # archive.db (읽기/쓰기)
+      - ${HOST_DATA_DIR:-./data}/output/archive.db:/data/archive.db:rw
+
+    command: ["sqlite_web", "--host", "0.0.0.0", "--read-only", "/data/archive.db"]
+    # --read-only: 읽기 전용 모드 (보안). 쓰기 필요 시 제거
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
 
     networks:
       - nas-sync-network
