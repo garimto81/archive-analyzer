@@ -55,6 +55,9 @@ scripts
 *.bat
 *.ps1
 
+# But keep docker folder
+!docker
+
 # Other
 .DS_Store
 Thumbs.db

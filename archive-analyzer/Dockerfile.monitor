@@ -23,10 +23,11 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # pip 업그레이드 및 의존성 설치
 COPY pyproject.toml .
-COPY README.md .
 COPY src/ src/
 
-RUN pip install --no-cache-dir --upgrade pip && \
+# README.md 없이 빌드 가능하도록 빈 파일 생성
+RUN touch README.md && \
+    pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir ".[web]"
 
 # =============================================================================
@@ -51,7 +52,6 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # 소스 복사
 COPY src/ src/
-COPY scripts/ scripts/
 
 # 데이터 디렉토리
 RUN mkdir -p /app/data/output /app/logs
@@ -73,9 +73,28 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
 
-# 엔트리포인트
-COPY docker/entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
+# 엔트리포인트 (인라인)
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "[$(date)] Starting NAS Auto Sync Service..."\n\
+echo "ARCHIVE_DB: $ARCHIVE_DB"\n\
+echo "WEB_PORT: $WEB_PORT"\n\
+\n\
+case "$1" in\n\
+    web)\n\
+        exec python -m uvicorn archive_analyzer.web.app:app --host 0.0.0.0 --port $WEB_PORT\n\
+        ;;\n\
+    sync)\n\
+        exec python -m archive_analyzer.nas_auto_sync --interval $SYNC_INTERVAL\n\
+        ;;\n\
+    all)\n\
+        python -m archive_analyzer.nas_auto_sync --interval $SYNC_INTERVAL &\n\
+        exec python -m uvicorn archive_analyzer.web.app:app --host 0.0.0.0 --port $WEB_PORT\n\
+        ;;\n\
+    *)\n\
+        exec "$@"\n\
+        ;;\n\
+esac' > /usr/local/bin/entrypoint.sh && chmod +x /usr/local/bin/entrypoint.sh
 
-ENTRYPOINT ["entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["web"]
