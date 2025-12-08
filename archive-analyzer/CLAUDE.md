@@ -230,6 +230,7 @@ OTT 호환 판정 기준 (`ReportGenerator`):
 | 문서 | 설명 |
 |------|------|
 | `docs/DATABASE_SCHEMA.md` | DB 스키마 및 연동 관계 (**스키마 변경 시 필수 업데이트**) |
+| `docs/SHEETS_SCHEMA.md` | Google Sheets 구조 및 동기화 (**시트 탭/컬럼 정의**) |
 | `docs/archive_structure.md` | 아카이브 폴더 구조 및 태그 스키마 |
 | `docs/MAM_SOLUTIONS_RESEARCH.md` | 오픈소스 MAM 솔루션 비교 |
 
