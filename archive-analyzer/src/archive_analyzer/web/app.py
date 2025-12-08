@@ -572,31 +572,30 @@ def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
 def _build_folder_tree(
     files: List[tuple], pokervod_files: set
 ) -> List[Dict[str, Any]]:
-    """파일 목록에서 재귀적 폴더 트리 생성 (Issue #51)
+    """파일 목록에서 계층적 폴더 트리 생성 (Issue #51)
 
     Args:
         files: [(id, path, filename, size_bytes, parent_folder), ...]
         pokervod_files: pokervod.db에 있는 파일명 집합
 
     Returns:
-        재귀적 트리 구조
+        계층적 트리 구조 (1단-2단-3단-4단...)
     """
-    # 폴더 구조 구축
-    folder_data: Dict[str, Dict] = {}  # parent_folder -> {files: [], stats: {}}
+    if not files:
+        return []
+
+    # 1. 폴더별 파일 수집
+    folder_files: Dict[str, List[Dict]] = {}  # folder_path -> [file_info, ...]
 
     for file_id, path, filename, size_bytes, parent_folder in files:
         if not parent_folder:
             parent_folder = "/"
 
-        if parent_folder not in folder_data:
-            folder_data[parent_folder] = {
-                "files": [],
-                "synced": 0,
-                "not_synced": 0,
-            }
+        if parent_folder not in folder_files:
+            folder_files[parent_folder] = []
 
         is_synced = filename in pokervod_files
-        folder_data[parent_folder]["files"].append({
+        folder_files[parent_folder].append({
             "id": file_id,
             "name": filename,
             "path": path,
@@ -604,36 +603,117 @@ def _build_folder_tree(
             "status": "synced" if is_synced else "not_synced",
         })
 
-        if is_synced:
-            folder_data[parent_folder]["synced"] += 1
-        else:
-            folder_data[parent_folder]["not_synced"] += 1
-
-    # 폴더 경로 정렬하여 트리 구조 생성
-    sorted_folders = sorted(folder_data.keys())
-
-    # 루트 노드 찾기 (가장 짧은 공통 경로)
-    if not sorted_folders:
+    # 2. 공통 prefix 찾기 (루트 경로)
+    all_paths = list(folder_files.keys())
+    if not all_paths:
         return []
 
-    # 간단한 flat 리스트로 반환 (첫 레벨 폴더들)
-    tree = []
-    for folder_path in sorted_folders:
-        data = folder_data[folder_path]
-        folder_name = folder_path.split("/")[-1] if "/" in folder_path else folder_path
+    # 가장 짧은 경로를 기준으로 공통 prefix 찾기
+    common_prefix = all_paths[0]
+    for p in all_paths[1:]:
+        while not p.startswith(common_prefix):
+            common_prefix = "/".join(common_prefix.split("/")[:-1])
+            if not common_prefix:
+                break
 
-        tree.append({
-            "type": "folder",
-            "name": folder_name or "root",
-            "path": folder_path,
-            "total_files": len(data["files"]),
-            "synced": data["synced"],
-            "not_synced": data["not_synced"],
-            "files": data["files"][:20],  # 첫 20개만 (성능)
-            "has_more": len(data["files"]) > 20,
-        })
+    # 3. 계층적 트리 구조 구축
+    tree_dict: Dict[str, Dict] = {}  # path -> node
 
-    return tree
+    for folder_path, file_list in folder_files.items():
+        # 공통 prefix 이후의 상대 경로
+        if common_prefix and folder_path.startswith(common_prefix):
+            rel_path = folder_path[len(common_prefix):].strip("/")
+        else:
+            rel_path = folder_path.split("/")[-1] if "/" in folder_path else folder_path
+
+        # 경로 분해
+        parts = rel_path.split("/") if rel_path else []
+
+        # 파일 통계
+        synced = sum(1 for f in file_list if f["status"] == "synced")
+        not_synced = len(file_list) - synced
+
+        # 현재 폴더 노드 생성
+        current_path = ""
+        for i, part in enumerate(parts):
+            parent_path = current_path
+            current_path = f"{current_path}/{part}" if current_path else part
+
+            if current_path not in tree_dict:
+                tree_dict[current_path] = {
+                    "type": "folder",
+                    "name": part,
+                    "path": folder_path if i == len(parts) - 1 else "",
+                    "depth": i + 1,
+                    "children": {},
+                    "files": [],
+                    "synced": 0,
+                    "not_synced": 0,
+                    "total_files": 0,
+                }
+
+            # 마지막 레벨이면 파일 추가
+            if i == len(parts) - 1:
+                tree_dict[current_path]["files"] = file_list  # 모든 파일
+                tree_dict[current_path]["synced"] = synced
+                tree_dict[current_path]["not_synced"] = not_synced
+                tree_dict[current_path]["total_files"] = len(file_list)
+                tree_dict[current_path]["path"] = folder_path
+
+            # 부모-자식 관계 설정
+            if parent_path and parent_path in tree_dict:
+                tree_dict[parent_path]["children"][current_path] = tree_dict[current_path]
+
+    # 4. 트리 구조로 변환 (루트 노드들만 추출)
+    root_nodes = []
+    for path, node in tree_dict.items():
+        # 1단계 폴더만 (부모가 없는 노드)
+        if "/" not in path:
+            root_nodes.append(_convert_tree_node(node, tree_dict))
+
+    # 통계 집계 (하위 폴더 포함)
+    for node in root_nodes:
+        _aggregate_stats(node)
+
+    return sorted(root_nodes, key=lambda x: x["name"])
+
+
+def _convert_tree_node(node: Dict, tree_dict: Dict) -> Dict:
+    """트리 노드를 재귀적으로 변환"""
+    children = []
+    for child_path, child_node in node.get("children", {}).items():
+        children.append(_convert_tree_node(child_node, tree_dict))
+
+    return {
+        "type": "folder",
+        "name": node["name"],
+        "path": node.get("path", ""),
+        "depth": node.get("depth", 1),
+        "children": sorted(children, key=lambda x: x["name"]),
+        "files": node.get("files", []),
+        "synced": node.get("synced", 0),
+        "not_synced": node.get("not_synced", 0),
+        "total_files": node.get("total_files", 0),
+    }
+
+
+def _aggregate_stats(node: Dict) -> tuple:
+    """하위 폴더 통계를 상위로 집계"""
+    total_files = node.get("total_files", 0)
+    synced = node.get("synced", 0)
+    not_synced = node.get("not_synced", 0)
+
+    for child in node.get("children", []):
+        child_total, child_synced, child_not_synced = _aggregate_stats(child)
+        total_files += child_total
+        synced += child_synced
+        not_synced += child_not_synced
+
+    node["total_files_recursive"] = total_files
+    node["synced_recursive"] = synced
+    node["not_synced_recursive"] = not_synced
+
+    return total_files, synced, not_synced
 
 
 def get_file_history(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -1440,36 +1520,49 @@ def get_embedded_dashboard() -> HTMLResponse:
             }
         }
 
-        // Issue #51: 재귀적 폴더 트리 렌더링
-        function renderFolderTree(folders, parentId) {
+        // Issue #51: 계층적 폴더 트리 렌더링 (1단-2단-3단-4단...)
+        function renderFolderTree(folders, parentId, depth = 1) {
             if (!folders || folders.length === 0) return '';
 
             return folders.map((folder, idx) => {
                 const folderId = `${parentId}-${idx}`;
-                const syncPercent = folder.total_files > 0
-                    ? Math.round((folder.synced / folder.total_files) * 100)
-                    : 0;
+                const hasChildren = folder.children && folder.children.length > 0;
+                const hasFiles = folder.files && folder.files.length > 0;
+
+                // 재귀 통계 사용 (하위 폴더 포함)
+                const totalFiles = folder.total_files_recursive || folder.total_files || 0;
+                const synced = folder.synced_recursive || folder.synced || 0;
+                const syncPercent = totalFiles > 0 ? Math.round((synced / totalFiles) * 100) : 0;
+
+                // depth에 따른 들여쓰기 색상
+                const borderColors = ['border-gray-600', 'border-gray-700', 'border-gray-800', 'border-gray-900'];
+                const borderColor = borderColors[Math.min(depth - 1, borderColors.length - 1)];
 
                 return `
-                    <div class="border-l border-gray-700 pl-3 mt-1">
+                    <div class="border-l ${borderColor} pl-3 mt-1">
                         <div class="flex items-center gap-2 cursor-pointer hover:bg-gray-700/30 p-1 rounded folder-item"
                              onclick="toggleFolder('${folderId}')">
-                            <span id="icon-${folderId}">📂</span>
-                            <span class="text-sm">${folder.name}</span>
-                            <span class="text-xs text-gray-500">(${folder.total_files})</span>
+                            <span id="icon-${folderId}">${hasChildren || hasFiles ? '📁' : '📂'}</span>
+                            <span class="text-sm ${depth === 1 ? 'font-medium' : ''}">${folder.name}</span>
+                            <span class="text-xs text-gray-500">(${totalFiles})</span>
                             <span class="text-xs ${syncPercent >= 80 ? 'text-green-400' : syncPercent >= 50 ? 'text-yellow-400' : 'text-red-400'}">
                                 ${syncPercent}%
                             </span>
+                            ${hasChildren ? `<span class="text-xs text-gray-600">▶</span>` : ''}
                         </div>
-                        <div id="files-${folderId}" class="hidden ml-4 border-l border-gray-800 pl-2">
-                            ${(folder.files || []).map(f => `
-                                <div class="flex items-center gap-2 text-xs py-0.5">
-                                    <span>${f.status === 'synced' ? '✅' : '❌'}</span>
-                                    <span class="text-gray-400 truncate max-w-xs" title="${f.name}">${f.name}</span>
-                                    <span class="text-gray-600">${formatSize(f.size_bytes)}</span>
+                        <div id="content-${folderId}" class="hidden ml-2">
+                            ${hasChildren ? renderFolderTree(folder.children, folderId, depth + 1) : ''}
+                            ${hasFiles ? `
+                                <div class="border-l border-gray-800 pl-2 mt-1">
+                                    ${folder.files.map(f => `
+                                        <div class="flex items-center gap-2 text-xs py-0.5 hover:bg-gray-800/30">
+                                            <span>${f.status === 'synced' ? '✅' : '❌'}</span>
+                                            <span class="text-gray-400 truncate max-w-sm" title="${f.path || f.name}">${f.name}</span>
+                                            <span class="text-gray-600">${formatSize(f.size_bytes)}</span>
+                                        </div>
+                                    `).join('')}
                                 </div>
-                            `).join('')}
-                            ${folder.has_more ? `<div class="text-xs text-gray-600 italic">... 더 많은 파일</div>` : ''}
+                            ` : ''}
                         </div>
                     </div>
                 `;
@@ -1484,11 +1577,11 @@ def get_embedded_dashboard() -> HTMLResponse:
         }
 
         function toggleFolder(id) {
-            const files = document.getElementById('files-' + id);
+            const content = document.getElementById('content-' + id);
             const icon = document.getElementById('icon-' + id);
-            if (files) {
-                files.classList.toggle('hidden');
-                icon.textContent = files.classList.contains('hidden') ? '📂' : '📂';
+            if (content) {
+                content.classList.toggle('hidden');
+                icon.textContent = content.classList.contains('hidden') ? '📁' : '📂';
             }
         }
 
