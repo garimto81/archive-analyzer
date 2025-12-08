@@ -219,16 +219,37 @@ def get_db_stats(db_path: str) -> Dict[str, Any]:
 # HLS 호환 확장자 (sync.py와 동일)
 HLS_COMPATIBLE_EXTENSIONS = ("mp4", "mov", "ts", "m4v", "m2ts", "mts")
 
+# Issue #51: 미등록 사유 분류
+NOT_SYNCED_REASONS = {
+    "hls_incompatible": "HLS 비호환 포맷",
+    "duplicate_excluded": "중복 파일 제외",
+    "non_video": "비디오 아님",
+    "pending_sync": "동기화 대기",
+}
+
+# 비디오 확장자
+VIDEO_EXTENSIONS = ("mp4", "mov", "ts", "m4v", "m2ts", "mts", "mkv", "avi", "wmv", "flv", "webm", "mxf")
+
+# HLS 비호환 확장자
+NON_HLS_EXTENSIONS = ("mxf", "webm", "mkv", "avi", "wmv", "flv")
+
 
 def get_matching_summary(
     archive_db: str, pokervod_db: str
 ) -> Dict[str, Any]:
-    """매칭 요약 통계 계산"""
+    """매칭 요약 통계 계산 (Issue #51: 미등록 사유별 분류)"""
     summary = {
         "synced": 0,
         "not_synced": 0,
         "duplicates": 0,
         "catalogs": [],
+        # Issue #51: 미등록 사유별 상세
+        "not_synced_reasons": {
+            "hls_incompatible": 0,
+            "duplicate_excluded": 0,
+            "non_video": 0,
+            "pending_sync": 0,
+        },
     }
 
     if not Path(archive_db).exists():
@@ -236,49 +257,50 @@ def get_matching_summary(
 
     conn_archive = sqlite3.connect(archive_db)
     conn_pokervod = None
+    pokervod_filenames = set()
+
     if Path(pokervod_db).exists():
         conn_pokervod = sqlite3.connect(pokervod_db)
+        cursor = conn_pokervod.execute("SELECT filename FROM files")
+        pokervod_filenames = {row[0] for row in cursor.fetchall()}
 
     try:
-        # archive.db 파일 수
-        cursor = conn_archive.execute("SELECT COUNT(*) FROM files")
-        total_archive = cursor.fetchone()[0]
+        # archive.db 전체 파일 조회
+        cursor = conn_archive.execute("SELECT filename FROM files")
+        all_files = [row[0] for row in cursor.fetchall()]
 
-        # pokervod.db 파일 수 (매칭된 파일)
+        # 중복 파일명 찾기
+        cursor = conn_archive.execute(
+            """SELECT filename FROM files
+               GROUP BY filename HAVING COUNT(*) > 1"""
+        )
+        duplicate_filenames = {row[0] for row in cursor.fetchall()}
+
+        # Issue #51: 파일별 사유 분류
         synced = 0
-        if conn_pokervod:
-            cursor = conn_pokervod.execute("SELECT COUNT(*) FROM files")
-            synced = cursor.fetchone()[0]
+        hls_incompatible = 0
+        duplicate_excluded = 0
+        non_video = 0
+        pending_sync = 0
 
-        # HLS 비호환 (확장자 기반)
-        non_hls_extensions = tuple(
-            f"%.{ext}" for ext in ("mxf", "webm", "mkv", "avi", "wmv", "flv")
-        )
-        cursor = conn_archive.execute(
-            f"""SELECT COUNT(*) FROM files
-               WHERE {' OR '.join('filename LIKE ?' for _ in non_hls_extensions)}""",
-            non_hls_extensions,
-        )
-        not_synced = cursor.fetchone()[0]
+        for filename in all_files:
+            ext = filename.split(".")[-1].lower() if "." in filename else ""
+            is_video = ext in VIDEO_EXTENSIONS
+            is_hls_compatible = ext in HLS_COMPATIBLE_EXTENSIONS
+            is_synced = filename in pokervod_filenames
+            is_duplicate = filename in duplicate_filenames
 
-        # 중복 파일 수 (동일 파일명이 여러 경로에 존재)
-        cursor = conn_archive.execute(
-            """SELECT COUNT(*) FROM (
-                   SELECT filename, COUNT(*) as cnt FROM files
-                   GROUP BY filename HAVING cnt > 1
-               )"""
-        )
-        duplicate_groups = cursor.fetchone()[0]
-
-        # 중복으로 인해 제외된 파일 수 (그룹당 n-1개)
-        cursor = conn_archive.execute(
-            """SELECT SUM(cnt - 1) FROM (
-                   SELECT filename, COUNT(*) as cnt FROM files
-                   GROUP BY filename HAVING cnt > 1
-               )"""
-        )
-        result = cursor.fetchone()[0]
-        duplicates_excluded = result if result else 0
+            if is_synced:
+                synced += 1
+            elif not is_video:
+                non_video += 1
+            elif not is_hls_compatible:
+                hls_incompatible += 1
+            elif is_duplicate:
+                # 중복 파일 중 하나만 동기화됨 - 나머지는 제외
+                duplicate_excluded += 1
+            else:
+                pending_sync += 1
 
         # 카탈로그별 통계
         cursor = conn_archive.execute(
@@ -299,11 +321,19 @@ def get_matching_summary(
         )
         catalogs = [{"name": row[0], "count": row[1]} for row in cursor.fetchall()]
 
+        not_synced_total = hls_incompatible + duplicate_excluded + non_video + pending_sync
+
         summary = {
             "synced": synced,
-            "not_synced": not_synced,
-            "duplicates": duplicates_excluded,
+            "not_synced": not_synced_total,
+            "duplicates": duplicate_excluded,
             "catalogs": catalogs,
+            "not_synced_reasons": {
+                "hls_incompatible": hls_incompatible,
+                "duplicate_excluded": duplicate_excluded,
+                "non_video": non_video,
+                "pending_sync": pending_sync,
+            },
         }
 
     except Exception as e:
@@ -322,8 +352,20 @@ def get_matching_items(
     page: int = 1,
     per_page: int = 20,
     status_filter: Optional[str] = None,
+    sort_by: str = "filename",
+    sort_order: str = "asc",
 ) -> tuple:
-    """1:1 매칭 아이템 목록 조회 (필터 및 페이지네이션 수정)"""
+    """1:1 매칭 아이템 목록 조회 (Issue #51: 정렬 + 미등록 사유)
+
+    Args:
+        archive_db: archive.db 경로
+        pokervod_db: pokervod.db 경로
+        page: 페이지 번호
+        per_page: 페이지당 항목 수
+        status_filter: 상태 필터 (synced, not_synced, synced_with_duplicates)
+        sort_by: 정렬 기준 (filename, size, status, path, modified_at)
+        sort_order: 정렬 순서 (asc, desc)
+    """
     items = []
     total = 0
     summary = {"synced": 0, "not_synced": 0, "synced_with_duplicates": 0}
@@ -357,25 +399,28 @@ def get_matching_items(
         )
         duplicate_filenames = {row[0] for row in cursor.fetchall()}
 
-        # 모든 파일 조회 (필터링 및 페이지네이션을 메모리에서 처리)
+        # 모든 파일 조회 (modified_at 포함)
         cursor = conn_archive.execute(
-            """SELECT id, path, filename, file_type, size_bytes
+            """SELECT id, path, filename, file_type, size_bytes, modified_at
                FROM files
                ORDER BY id"""
         )
 
         all_items = []
         for row in cursor.fetchall():
-            source_id, path, filename, file_type, size_bytes = row
+            source_id, path, filename, file_type, size_bytes, modified_at = row
 
             # 확장자로 HLS 호환 여부 확인
             ext = filename.split(".")[-1].lower() if "." in filename else ""
             is_hls_compatible = ext in HLS_COMPATIBLE_EXTENSIONS
+            is_video = ext in VIDEO_EXTENSIONS
 
             # 매칭 상태 결정
             target_info = pokervod_files.get(filename)
             is_duplicate = filename in duplicate_filenames
 
+            # Issue #51: 미등록 사유 분류
+            not_synced_reason = None
             if target_info:
                 if is_duplicate:
                     status = "synced_with_duplicates"
@@ -386,15 +431,26 @@ def get_matching_items(
             else:
                 status = "not_synced"
                 summary["not_synced"] += 1
+                # 미등록 사유 결정
+                if not is_video:
+                    not_synced_reason = "non_video"
+                elif not is_hls_compatible:
+                    not_synced_reason = "hls_incompatible"
+                elif is_duplicate:
+                    not_synced_reason = "duplicate_excluded"
+                else:
+                    not_synced_reason = "pending_sync"
 
             item = {
                 "status": status,
+                "not_synced_reason": not_synced_reason,
                 "source": {
                     "id": source_id,
                     "path": path,
                     "filename": filename,
                     "file_type": file_type,
                     "size_bytes": size_bytes,
+                    "modified_at": modified_at,
                 },
                 "target": target_info,
                 "is_hls_compatible": is_hls_compatible,
@@ -420,6 +476,18 @@ def get_matching_items(
         else:
             filtered_items = all_items
 
+        # Issue #51: 정렬 적용
+        sort_key_map = {
+            "filename": lambda x: (x["source"]["filename"] or "").lower(),
+            "size": lambda x: x["source"]["size_bytes"] or 0,
+            "status": lambda x: x["status"],
+            "path": lambda x: (x["source"]["path"] or "").lower(),
+            "modified_at": lambda x: x["source"]["modified_at"] or "",
+        }
+        sort_key = sort_key_map.get(sort_by, sort_key_map["filename"])
+        reverse = sort_order.lower() == "desc"
+        filtered_items.sort(key=sort_key, reverse=reverse)
+
         # 필터 적용 후 total 계산
         total = len(filtered_items)
 
@@ -438,7 +506,7 @@ def get_matching_items(
 
 
 def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
-    """카탈로그별 트리 구조 생성"""
+    """카탈로그별 트리 구조 생성 (Issue #51: 재귀적 폴더 구조)"""
     catalogs = []
 
     if not Path(archive_db).exists():
@@ -466,35 +534,30 @@ def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
 
         for catalog_name, pattern in catalog_patterns:
             cursor = conn_archive.execute(
-                """SELECT id, path, filename, size_bytes
+                """SELECT id, path, filename, size_bytes, parent_folder
                    FROM files WHERE path LIKE ?
                    ORDER BY path""",
                 (pattern,),
             )
             files = cursor.fetchall()
 
+            if not files:
+                continue
+
             synced = sum(1 for f in files if f[2] in pokervod_files)
             not_synced = len(files) - synced
+
+            # Issue #51: 재귀적 폴더 트리 구조 생성
+            folder_tree = _build_folder_tree(files, pokervod_files)
 
             catalog = {
                 "name": catalog_name,
                 "total_files": len(files),
                 "synced": synced,
                 "not_synced": not_synced,
-                "files": [
-                    {
-                        "name": f[2],
-                        "source_id": f[0],
-                        "path": f[1],
-                        "target_id": None,  # 간소화
-                        "status": "synced" if f[2] in pokervod_files else "not_synced",
-                        "size_bytes": f[3],
-                    }
-                    for f in files[:50]  # 첫 50개만
-                ],
+                "children": folder_tree,
             }
-            if len(files) > 0:
-                catalogs.append(catalog)
+            catalogs.append(catalog)
 
     except Exception as e:
         logger.error(f"카탈로그 트리 생성 오류: {e}")
@@ -504,6 +567,73 @@ def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
             conn_pokervod.close()
 
     return catalogs
+
+
+def _build_folder_tree(
+    files: List[tuple], pokervod_files: set
+) -> List[Dict[str, Any]]:
+    """파일 목록에서 재귀적 폴더 트리 생성 (Issue #51)
+
+    Args:
+        files: [(id, path, filename, size_bytes, parent_folder), ...]
+        pokervod_files: pokervod.db에 있는 파일명 집합
+
+    Returns:
+        재귀적 트리 구조
+    """
+    # 폴더 구조 구축
+    folder_data: Dict[str, Dict] = {}  # parent_folder -> {files: [], stats: {}}
+
+    for file_id, path, filename, size_bytes, parent_folder in files:
+        if not parent_folder:
+            parent_folder = "/"
+
+        if parent_folder not in folder_data:
+            folder_data[parent_folder] = {
+                "files": [],
+                "synced": 0,
+                "not_synced": 0,
+            }
+
+        is_synced = filename in pokervod_files
+        folder_data[parent_folder]["files"].append({
+            "id": file_id,
+            "name": filename,
+            "path": path,
+            "size_bytes": size_bytes,
+            "status": "synced" if is_synced else "not_synced",
+        })
+
+        if is_synced:
+            folder_data[parent_folder]["synced"] += 1
+        else:
+            folder_data[parent_folder]["not_synced"] += 1
+
+    # 폴더 경로 정렬하여 트리 구조 생성
+    sorted_folders = sorted(folder_data.keys())
+
+    # 루트 노드 찾기 (가장 짧은 공통 경로)
+    if not sorted_folders:
+        return []
+
+    # 간단한 flat 리스트로 반환 (첫 레벨 폴더들)
+    tree = []
+    for folder_path in sorted_folders:
+        data = folder_data[folder_path]
+        folder_name = folder_path.split("/")[-1] if "/" in folder_path else folder_path
+
+        tree.append({
+            "type": "folder",
+            "name": folder_name or "root",
+            "path": folder_path,
+            "total_files": len(data["files"]),
+            "synced": data["synced"],
+            "not_synced": data["not_synced"],
+            "files": data["files"][:20],  # 첫 20개만 (성능)
+            "has_more": len(data["files"]) > 20,
+        })
+
+    return tree
 
 
 def get_file_history(db_path: str, limit: int = 50) -> List[Dict[str, Any]]:
@@ -832,14 +962,18 @@ def create_app() -> FastAPI:
         page: int = 1,
         per_page: int = 20,
         status: Optional[str] = None,
+        sort_by: str = "filename",
+        sort_order: str = "asc",
     ):
-        """1:1 매칭 테이블 데이터 (PRD 7.3)"""
+        """1:1 매칭 테이블 데이터 (PRD 7.3, Issue #51: 정렬)"""
         items, total, summary = get_matching_items(
             state.config.archive_db,
             state.config.pokervod_db,
             page=page,
             per_page=per_page,
             status_filter=status,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
 
         return {
@@ -965,7 +1099,7 @@ def create_app() -> FastAPI:
 
 
 def get_embedded_dashboard() -> HTMLResponse:
-    """내장 대시보드 HTML (Issue #45: 1:1 매칭 UI)"""
+    """내장 대시보드 HTML (Issue #45: 1:1 매칭 UI, Issue #51: 정렬/사유)"""
     html = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -987,6 +1121,12 @@ def get_embedded_dashboard() -> HTMLResponse:
         .badge-synced { background: #166534; color: #86efac; }
         .badge-not-synced { background: #991b1b; color: #fca5a5; }
         .badge-duplicate { background: #854d0e; color: #fde047; }
+        .badge-reason { background: #374151; color: #9ca3af; font-size: 10px; margin-left: 4px; }
+        .sort-btn { cursor: pointer; user-select: none; }
+        .sort-btn:hover { color: #60a5fa; }
+        .sort-active { color: #3b82f6; }
+        .folder-item { transition: all 0.2s; }
+        .folder-item:hover { background: rgba(59, 130, 246, 0.1); }
     </style>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen">
@@ -1052,25 +1192,39 @@ def get_embedded_dashboard() -> HTMLResponse:
             </button>
         </div>
 
-        <!-- Tab Content: Matching Table (PRD 6.2) -->
+        <!-- Tab Content: Matching Table (PRD 6.2, Issue #51) -->
         <div id="content-table" class="bg-gray-800 rounded-lg p-4">
-            <!-- Filter -->
-            <div class="flex gap-4 mb-4 text-sm">
+            <!-- Filter & Sort (Issue #51) -->
+            <div class="flex flex-wrap gap-4 mb-4 text-sm">
                 <select id="status-filter" onchange="loadMatching()" class="bg-gray-700 rounded px-3 py-1">
                     <option value="">전체 상태</option>
                     <option value="synced">✅ 동기화됨</option>
                     <option value="not_synced">❌ 미등록</option>
                     <option value="synced_with_duplicates">⚠️ 중복</option>
                 </select>
-                <div id="matching-summary" class="text-gray-400"></div>
+                <select id="sort-by" onchange="loadMatching()" class="bg-gray-700 rounded px-3 py-1">
+                    <option value="filename">파일명순</option>
+                    <option value="size">크기순</option>
+                    <option value="status">상태순</option>
+                    <option value="path">경로순</option>
+                    <option value="modified_at">수정일순</option>
+                </select>
+                <select id="sort-order" onchange="loadMatching()" class="bg-gray-700 rounded px-3 py-1">
+                    <option value="asc">오름차순 ↑</option>
+                    <option value="desc">내림차순 ↓</option>
+                </select>
+                <div id="matching-summary" class="text-gray-400 ml-auto"></div>
             </div>
+
+            <!-- Issue #51: 미등록 사유별 통계 -->
+            <div id="reason-summary" class="flex gap-3 mb-4 text-xs text-gray-500"></div>
 
             <!-- Table -->
             <div class="overflow-x-auto">
                 <table class="w-full matching-table">
                     <thead>
                         <tr class="text-left border-b border-gray-700 text-gray-400">
-                            <th class="pb-2 w-20">상태</th>
+                            <th class="pb-2 w-24">상태</th>
                             <th class="pb-2">📂 Source (archive.db)</th>
                             <th class="pb-2">📺 Target (pokervod.db)</th>
                             <th class="pb-2 w-16">ID</th>
@@ -1117,6 +1271,14 @@ def get_embedded_dashboard() -> HTMLResponse:
         let currentPage = 1;
         const perPage = 20;
 
+        // Issue #51: 미등록 사유 라벨
+        const REASON_LABELS = {
+            'hls_incompatible': '🎬 HLS 비호환',
+            'duplicate_excluded': '📋 중복 제외',
+            'non_video': '📄 비디오 아님',
+            'pending_sync': '⏳ 동기화 대기'
+        };
+
         // Tab switching
         function showTab(tab) {
             ['table', 'tree', 'logs'].forEach(t => {
@@ -1127,7 +1289,7 @@ def get_embedded_dashboard() -> HTMLResponse:
             if (tab === 'tree') loadTree();
         }
 
-        // Load dashboard summary
+        // Load dashboard summary (Issue #51: 미등록 사유별 통계)
         async function loadDashboard() {
             try {
                 const res = await fetch('/api/dashboard');
@@ -1138,17 +1300,27 @@ def get_embedded_dashboard() -> HTMLResponse:
                     document.getElementById('last-sync').textContent =
                         '마지막: ' + new Date(data.sync_status.last_sync_time).toLocaleString('ko-KR');
                 }
+
+                // Issue #51: 미등록 사유별 통계 (Summary API에서 가져옴)
+                const summaryRes = await fetch('/api/matching?page=1&per_page=1');
+                const summaryData = await summaryRes.json();
+                // 통계는 별도 API 필요 - 여기서는 로드시 갱신하지 않음
             } catch (e) {
                 console.error('Dashboard load error:', e);
             }
         }
 
-        // Load matching table
+        // Load matching table (Issue #51: 정렬 + 미등록 사유)
         async function loadMatching() {
             try {
                 const status = document.getElementById('status-filter').value;
-                const url = `/api/matching?page=${currentPage}&per_page=${perPage}` +
-                           (status ? `&status=${status}` : '');
+                const sortBy = document.getElementById('sort-by').value;
+                const sortOrder = document.getElementById('sort-order').value;
+
+                let url = `/api/matching?page=${currentPage}&per_page=${perPage}`;
+                url += `&sort_by=${sortBy}&sort_order=${sortOrder}`;
+                if (status) url += `&status=${status}`;
+
                 const res = await fetch(url);
                 const data = await res.json();
 
@@ -1158,8 +1330,10 @@ def get_embedded_dashboard() -> HTMLResponse:
                     `✅ ${sum.synced || 0} | ❌ ${sum.not_synced || 0} | ⚠️ ${sum.synced_with_duplicates || 0}`;
 
                 // Pagination
+                const start = data.total > 0 ? (currentPage-1)*perPage + 1 : 0;
+                const end = Math.min(currentPage*perPage, data.total);
                 document.getElementById('pagination-info').textContent =
-                    `${data.total}개 중 ${(currentPage-1)*perPage + 1}-${Math.min(currentPage*perPage, data.total)}`;
+                    `${data.total}개 중 ${start}-${end}`;
 
                 // Table
                 const tbody = document.getElementById('matching-body');
@@ -1169,7 +1343,7 @@ def get_embedded_dashboard() -> HTMLResponse:
                 }
 
                 tbody.innerHTML = data.items.map(item => {
-                    const statusBadge = getStatusBadge(item.status);
+                    const statusBadge = getStatusBadge(item.status, item.not_synced_reason);
                     const source = item.source || {};
                     const target = item.target;
                     const size = formatSize(source.size_bytes);
@@ -1179,15 +1353,15 @@ def get_embedded_dashboard() -> HTMLResponse:
                             <td class="py-2">${statusBadge}</td>
                             <td class="py-2">
                                 <div class="text-sm">${source.filename || '-'}</div>
-                                <div class="text-xs text-gray-500">${source.path || ''}</div>
+                                <div class="text-xs text-gray-500 truncate max-w-md" title="${source.path || ''}">${source.path || ''}</div>
                                 <div class="text-xs text-gray-600">${size} | ${item.is_hls_compatible ? 'HLS ✓' : 'HLS ✗'}</div>
                                 ${item.duplicates?.length ? `<div class="text-xs text-yellow-600">+${item.duplicates.length} 중복</div>` : ''}
                             </td>
                             <td class="py-2">
                                 ${target ? `
                                     <div class="text-sm text-green-400">${target.filename}</div>
-                                    <div class="text-xs text-gray-500">${target.nas_path || ''}</div>
-                                ` : `<span class="text-gray-600">${item.is_hls_compatible ? '미동기화' : 'HLS 비호환'}</span>`}
+                                    <div class="text-xs text-gray-500 truncate max-w-md">${target.nas_path || ''}</div>
+                                ` : `<span class="text-gray-600">${getReasonText(item.not_synced_reason)}</span>`}
                             </td>
                             <td class="py-2 text-gray-500">${target?.id || '-'}</td>
                         </tr>
@@ -1198,10 +1372,24 @@ def get_embedded_dashboard() -> HTMLResponse:
             }
         }
 
-        function getStatusBadge(status) {
+        // Issue #51: 미등록 사유 텍스트
+        function getReasonText(reason) {
+            switch(reason) {
+                case 'hls_incompatible': return 'HLS 비호환 포맷';
+                case 'duplicate_excluded': return '중복 제외';
+                case 'non_video': return '비디오 아님';
+                case 'pending_sync': return '동기화 대기';
+                default: return '미등록';
+            }
+        }
+
+        // Issue #51: 상태 배지 (미등록 사유 포함)
+        function getStatusBadge(status, reason) {
             switch(status) {
                 case 'synced': return '<span class="badge badge-synced">✅ 동기화</span>';
-                case 'not_synced': return '<span class="badge badge-not-synced">❌ 미등록</span>';
+                case 'not_synced':
+                    const reasonLabel = reason ? `<span class="badge badge-reason">${getReasonText(reason)}</span>` : '';
+                    return `<span class="badge badge-not-synced">❌ 미등록</span>${reasonLabel}`;
                 case 'synced_with_duplicates': return '<span class="badge badge-duplicate">⚠️ 중복</span>';
                 default: return '<span class="badge bg-gray-600">?</span>';
             }
@@ -1220,7 +1408,7 @@ def get_embedded_dashboard() -> HTMLResponse:
             loadMatching();
         }
 
-        // Load tree view
+        // Load tree view (Issue #51: 폴더 트리 구조)
         async function loadTree() {
             try {
                 const res = await fetch('/api/matching/tree');
@@ -1234,23 +1422,16 @@ def get_embedded_dashboard() -> HTMLResponse:
 
                 container.innerHTML = data.catalogs.map(cat => `
                     <div class="mb-4">
-                        <div class="flex items-center gap-2 cursor-pointer hover:bg-gray-700/50 p-2 rounded"
+                        <div class="flex items-center gap-2 cursor-pointer hover:bg-gray-700/50 p-2 rounded folder-item"
                              onclick="toggleCatalog('${cat.name}')">
-                            <span id="icon-${cat.name}">📂</span>
+                            <span id="icon-${cat.name}">📁</span>
                             <span class="font-medium">${cat.name}</span>
                             <span class="text-sm text-gray-400">(${cat.total_files} 파일)</span>
                             <span class="text-xs text-green-500">✅ ${cat.synced}</span>
                             <span class="text-xs text-red-500">❌ ${cat.not_synced}</span>
                         </div>
-                        <div id="files-${cat.name}" class="hidden ml-6 border-l border-gray-700 pl-4">
-                            ${cat.files.slice(0, 20).map(f => `
-                                <div class="flex items-center gap-2 text-sm py-1">
-                                    <span>${f.status === 'synced' ? '✅' : '❌'}</span>
-                                    <span class="text-gray-300">${f.name}</span>
-                                    <span class="text-xs text-gray-600">${formatSize(f.size_bytes)}</span>
-                                </div>
-                            `).join('')}
-                            ${cat.files.length > 20 ? `<div class="text-xs text-gray-500">... 외 ${cat.files.length - 20}개</div>` : ''}
+                        <div id="folders-${cat.name}" class="hidden ml-4">
+                            ${renderFolderTree(cat.children || [], cat.name)}
                         </div>
                     </div>
                 `).join('');
@@ -1259,11 +1440,56 @@ def get_embedded_dashboard() -> HTMLResponse:
             }
         }
 
+        // Issue #51: 재귀적 폴더 트리 렌더링
+        function renderFolderTree(folders, parentId) {
+            if (!folders || folders.length === 0) return '';
+
+            return folders.map((folder, idx) => {
+                const folderId = `${parentId}-${idx}`;
+                const syncPercent = folder.total_files > 0
+                    ? Math.round((folder.synced / folder.total_files) * 100)
+                    : 0;
+
+                return `
+                    <div class="border-l border-gray-700 pl-3 mt-1">
+                        <div class="flex items-center gap-2 cursor-pointer hover:bg-gray-700/30 p-1 rounded folder-item"
+                             onclick="toggleFolder('${folderId}')">
+                            <span id="icon-${folderId}">📂</span>
+                            <span class="text-sm">${folder.name}</span>
+                            <span class="text-xs text-gray-500">(${folder.total_files})</span>
+                            <span class="text-xs ${syncPercent >= 80 ? 'text-green-400' : syncPercent >= 50 ? 'text-yellow-400' : 'text-red-400'}">
+                                ${syncPercent}%
+                            </span>
+                        </div>
+                        <div id="files-${folderId}" class="hidden ml-4 border-l border-gray-800 pl-2">
+                            ${(folder.files || []).map(f => `
+                                <div class="flex items-center gap-2 text-xs py-0.5">
+                                    <span>${f.status === 'synced' ? '✅' : '❌'}</span>
+                                    <span class="text-gray-400 truncate max-w-xs" title="${f.name}">${f.name}</span>
+                                    <span class="text-gray-600">${formatSize(f.size_bytes)}</span>
+                                </div>
+                            `).join('')}
+                            ${folder.has_more ? `<div class="text-xs text-gray-600 italic">... 더 많은 파일</div>` : ''}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
         function toggleCatalog(name) {
-            const files = document.getElementById('files-' + name);
+            const folders = document.getElementById('folders-' + name);
             const icon = document.getElementById('icon-' + name);
-            files.classList.toggle('hidden');
-            icon.textContent = files.classList.contains('hidden') ? '📂' : '📂';
+            folders.classList.toggle('hidden');
+            icon.textContent = folders.classList.contains('hidden') ? '📁' : '📂';
+        }
+
+        function toggleFolder(id) {
+            const files = document.getElementById('files-' + id);
+            const icon = document.getElementById('icon-' + id);
+            if (files) {
+                files.classList.toggle('hidden');
+                icon.textContent = files.classList.contains('hidden') ? '📂' : '📂';
+            }
         }
 
         // Actions
