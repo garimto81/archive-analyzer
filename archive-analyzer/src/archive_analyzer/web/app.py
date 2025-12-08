@@ -506,7 +506,7 @@ def get_matching_items(
 
 
 def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
-    """카탈로그별 트리 구조 생성 (Issue #51: 재귀적 폴더 구조)"""
+    """카탈로그별 트리 구조 생성 (Issue #51, #55: 동적 카탈로그 추출)"""
     catalogs = []
 
     if not Path(archive_db).exists():
@@ -522,17 +522,25 @@ def get_catalog_tree(archive_db: str, pokervod_db: str) -> List[Dict[str, Any]]:
         pokervod_files = {row[0] for row in cursor.fetchall()}
 
     try:
-        # 카탈로그 정의
-        catalog_patterns = [
-            ("WSOP", "%WSOP%"),
-            ("HCL", "%HCL%"),
-            ("PAD", "%PAD%"),
-            ("MPP", "%MPP%"),
-            ("GOG", "%GOG%"),
-            ("GGMillions", "%GGMillions%"),
-        ]
+        # Issue #55: 동적 카탈로그 추출 (하드코딩 제거)
+        cursor = conn_archive.execute("SELECT DISTINCT path FROM files")
+        all_paths = [row[0] for row in cursor.fetchall()]
 
-        for catalog_name, pattern in catalog_patterns:
+        # ARCHIVE 하위 1단계 폴더 자동 감지
+        detected_catalogs: set = set()
+        for path in all_paths:
+            parts = path.split("/")
+            for i, part in enumerate(parts):
+                if part == "ARCHIVE" and i + 1 < len(parts):
+                    catalog = parts[i + 1]
+                    if catalog:
+                        detected_catalogs.add(catalog)
+                    break
+
+        # 카탈로그별 처리
+        for catalog_name in sorted(detected_catalogs):
+            # 동적 패턴 생성: /ARCHIVE/카탈로그명/
+            pattern = f"%/ARCHIVE/{catalog_name}/%"
             cursor = conn_archive.execute(
                 """SELECT id, path, filename, size_bytes, parent_folder
                    FROM files WHERE path LIKE ?
@@ -1099,6 +1107,118 @@ def create_app() -> FastAPI:
             state.config.archive_db, state.config.pokervod_db
         )
         return {"catalogs": catalogs}
+
+    # =========================================================================
+    # Issue #55: 동적 카탈로그 + 메타데이터 API
+    # =========================================================================
+
+    @app.get("/api/catalog/metadata/{file_id}")
+    async def get_file_metadata(file_id: int):
+        """파일 메타데이터 추출 (Issue #55)"""
+        from archive_analyzer.catalog_extractor import DynamicCatalogExtractor
+
+        if not Path(state.config.archive_db).exists():
+            return {"error": "archive.db not found"}
+
+        conn = sqlite3.connect(state.config.archive_db)
+        cursor = conn.execute(
+            "SELECT path, filename FROM files WHERE id = ?", (file_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return {"error": "File not found"}
+
+        extractor = DynamicCatalogExtractor()
+        metadata = extractor.extract(row[0], row[1])
+        return {
+            "file_id": file_id,
+            "path": row[0],
+            "filename": row[1],
+            "metadata": metadata.to_dict(),
+        }
+
+    @app.get("/api/catalog/views/{view_type}")
+    async def get_catalog_view(view_type: str, limit: int = 100):
+        """다중 뷰 카탈로그 (Issue #55)
+
+        Args:
+            view_type: brand, year, location, event_type, player
+            limit: 최대 반환 수
+        """
+        from archive_analyzer.catalog_extractor import (
+            DynamicCatalogExtractor,
+            CatalogAggregator,
+        )
+
+        if not Path(state.config.archive_db).exists():
+            return {"error": "archive.db not found"}
+
+        conn = sqlite3.connect(state.config.archive_db)
+        cursor = conn.execute(
+            "SELECT path, filename FROM files ORDER BY path LIMIT ?", (limit,)
+        )
+        files = [(row[0], row[1]) for row in cursor.fetchall()]
+        conn.close()
+
+        extractor = DynamicCatalogExtractor()
+        aggregator = CatalogAggregator(extractor)
+
+        view_methods = {
+            "brand": aggregator.aggregate_by_brand,
+            "year": aggregator.aggregate_by_year,
+            "location": aggregator.aggregate_by_location,
+            "event_type": aggregator.aggregate_by_event_type,
+            "player": aggregator.aggregate_by_player,
+        }
+
+        if view_type not in view_methods:
+            return {
+                "error": f"Invalid view_type. Use: {list(view_methods.keys())}"
+            }
+
+        result = view_methods[view_type](files)
+
+        # 결과를 JSON 직렬화 가능한 형태로 변환
+        formatted = {}
+        for key, items in result.items():
+            formatted[str(key)] = {
+                "count": len(items),
+                "items": [
+                    {
+                        "generated_title": m.generated_title,
+                        "tags": m.tags,
+                    }
+                    for m in items[:20]  # 각 그룹당 최대 20개
+                ],
+            }
+
+        return {"view_type": view_type, "groups": formatted}
+
+    @app.get("/api/catalog/tags")
+    async def get_all_tags(limit: int = 500):
+        """모든 태그 및 빈도 조회 (Issue #55)"""
+        from archive_analyzer.catalog_extractor import (
+            DynamicCatalogExtractor,
+            CatalogAggregator,
+        )
+
+        if not Path(state.config.archive_db).exists():
+            return {"error": "archive.db not found"}
+
+        conn = sqlite3.connect(state.config.archive_db)
+        cursor = conn.execute(
+            "SELECT path, filename FROM files ORDER BY path LIMIT ?", (limit,)
+        )
+        files = [(row[0], row[1]) for row in cursor.fetchall()]
+        conn.close()
+
+        extractor = DynamicCatalogExtractor()
+        aggregator = CatalogAggregator(extractor)
+        tags = aggregator.get_all_tags(files)
+
+        return {"total_tags": len(tags), "tags": tags}
 
     # =========================================================================
     # Issue #49: Google Sheets 동기화 API
