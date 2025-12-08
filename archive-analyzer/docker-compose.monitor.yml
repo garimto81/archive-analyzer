@@ -55,7 +55,8 @@ services:
       - ${NAS_MOUNT_PATH:-/mnt/nas}:/nas:ro
 
       # GCP 서비스 계정 (Sheets 동기화용)
-      - ${GCP_CONFIG_PATH:-./config}:/app/config:ro
+      # 기본값: D:/AI/claude01/archive-analyzer/config (기존 sheets_sync.py 설정)
+      - ${GCP_CONFIG_PATH:-D:/AI/claude01/archive-analyzer/config}:/app/config:ro
 
     # 모드 선택: web, sync, track, all
     command: all
