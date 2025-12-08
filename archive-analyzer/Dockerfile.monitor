@@ -28,7 +28,7 @@ COPY src/ src/
 # README.md 없이 빌드 가능하도록 빈 파일 생성
 RUN touch README.md && \
     pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir ".[web]"
+    pip install --no-cache-dir ".[web,sheets]"
 
 # =============================================================================
 # Runtime Image
