@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-**Version**: 7.3.0 | **Context**: Windows, PowerShell, Root: `D:\AI\claude01`
+**Version**: 8.0.0 | **Context**: Windows, PowerShell, Root: `D:\AI\claude01`
 
 **GitHub**: `garimto81/claude-code-config`
 
@@ -24,10 +24,31 @@ Claude Code 전역 워크플로우 설정 저장소:
 
 ```
 D:\AI\claude01\
-├── .claude/commands/    # 커스텀 슬래시 커맨드
-├── .claude/skills/      # 커스텀 스킬
+├── .claude/
+│   ├── commands/        # 커스텀 슬래시 커맨드 (20개)
+│   └── skills/          # 커스텀 스킬 (13개)
+│       ├── tdd-workflow/
+│       ├── debugging-workflow/
+│       ├── code-quality-checker/
+│       ├── final-check-automation/
+│       ├── phase-validation/
+│       ├── pre-work-research/
+│       ├── issue-resolution/
+│       ├── parallel-agent-orchestration/
+│       ├── journey-sharing/
+│       ├── webapp-testing/
+│       ├── pr-review-agent/
+│       ├── command-analytics/
+│       └── skill-creator/
 ├── docs/                # 워크플로우 문서
-└── src/agents/          # AI 워크플로우 에이전트 (Python)
+├── src/agents/          # AI 워크플로우 에이전트 (Python)
+│   ├── config.py              # 모델 티어링 (Sonnet/Haiku)
+│   ├── parallel_workflow.py   # Fan-Out/Fan-In 병렬 실행
+│   ├── dev_workflow.py        # 4-에이전트 병렬 개발
+│   ├── test_workflow.py       # 4-에이전트 병렬 테스트
+│   ├── phase_validator.py     # Phase 0-6 검증
+│   └── utils.py               # 유틸리티
+└── tasks/prds/          # PRD 문서
 ```
 
 ---
@@ -57,48 +78,92 @@ D:\AI\claude01\
 
 ---
 
-## 커맨드 (19개)
+## 커맨드 (20개)
 
-### 핵심 (자주 사용)
+### 핵심 워크플로우 (4개)
 
-| 커맨드 | 용도 |
-|--------|------|
-| `/work "내용"` | 전체 워크플로우 (`--auto` 완전 자동화) |
-| `/issue` | 이슈 관리 (`list`, `create`, `fix`, `failed`) |
-| `/commit` | 커밋 생성 |
-| `/check` | 린트 + 테스트 |
-| `/tdd` | TDD 워크플로우 |
+| 커맨드 | 용도 | 옵션 |
+|--------|------|------|
+| `/work "내용"` | 전체 워크플로우 | `--auto`, `--skip-analysis`, `--no-issue`, `--strict` |
+| `/work-auto "내용"` | 완전 자동화 | 최종 보고서만 확인 |
+| `/parallel <mode>` | 병렬 실행 | `dev`, `test`, `review`, `research`, `check` |
+| `/issue <action>` | 이슈 관리 | `list`, `create`, `edit`, `fix`, `failed` |
 
-### 병렬 실행
-
-| 커맨드 | 용도 |
-|--------|------|
-| `/parallel dev` | 병렬 개발 (`--branch` 브랜치 격리) |
-| `/parallel test` | 병렬 테스트 |
-| `/parallel review` | 병렬 코드 리뷰 |
-| `/parallel research` | 병렬 리서치 |
-| `/parallel check` | 충돌 검사 |
-
-### 생성/분석
+### 사전 작업 (2개)
 
 | 커맨드 | 용도 |
 |--------|------|
-| `/create` | PRD/PR/문서 생성 (`prd`, `pr`, `docs`) |
+| `/pre-work` | 솔루션 검색 + 중복 확인 + Make vs Buy |
 | `/research` | 코드베이스 분석 (RPI Phase 1) |
-| `/plan` | 구현 계획 (RPI Phase 2) |
-| `/analyze` | 코드/로그 분석 |
 
-### 기타
+### 개발 (3개)
 
 | 커맨드 | 용도 |
 |--------|------|
-| `/todo` | 작업 관리 |
-| `/pre-work` | 사전 조사 |
-| `/final-check` | 최종 E2E 검증 |
-| `/changelog` | 체인지로그 생성 |
+| `/plan` | 구현 계획 수립 (RPI Phase 2) |
+| `/tdd` | Red-Green-Refactor 가이드 |
+| `/create <type>` | PRD/PR/문서 생성 (`prd`, `pr`, `docs`) |
+
+### 검증 (5개)
+
+| 커맨드 | 용도 |
+|--------|------|
+| `/check` | 린트 + 타입 + 보안 |
 | `/optimize` | 성능 분석 |
+| `/api-test` | API 엔드포인트 테스트 |
+| `/final-check` | E2E 엄격 검증 |
+| `/analyze <type>` | 코드/로그 분석 (`code`, `logs`) |
+
+### 문서 & 커밋 (3개)
+
+| 커맨드 | 용도 |
+|--------|------|
+| `/commit` | Conventional Commits |
+| `/changelog` | CHANGELOG 자동 생성 |
+| `/pr <action>` | PR 리뷰/머지 (`review`, `improve`, `auto`) |
+
+### 세션 관리 (3개)
+
+| 커맨드 | 용도 |
+|--------|------|
+| `/todo <action>` | 작업 관리 (`list`, `add`, `done`, `clear`) |
+| `/journey <action>` | 세션 여정 (`save`, `load`, `link`) |
+| `/compact` | 컨텍스트 압축 |
 
 전체: `.claude/commands/`
+
+---
+
+## 커맨드 선택 가이드
+
+| 작업 유형 | 추천 커맨드 | 순서 |
+|----------|------------|------|
+| 신규 기능 추가 | `/work` | pre-work → 구현 → E2E → PR |
+| 버그 수정 | `/issue fix #N` | 분석 → 수정 → 테스트 |
+| 성능 최적화 | `/optimize` → `/tdd` | 병목 분석 → TDD 구현 |
+| 코드 리팩토링 | `/parallel review` → `/check` | 리뷰 → 품질 검사 |
+| PR 리뷰 | `/pr review` → `/pr auto` | 리뷰 → 자동 머지 |
+| E2E 검증 | `/final-check` | 테스트 → 자동 수정 |
+
+---
+
+## 스킬 (13개)
+
+자동 트리거되는 스킬 목록:
+
+| 스킬 | Phase | 트리거 조건 |
+|------|-------|-----------|
+| `tdd-workflow` | 1, 2 | "TDD", "테스트 먼저" |
+| `debugging-workflow` | 1, 2, 5 | "debug", "3회 실패" |
+| `code-quality-checker` | 2, 2.5 | "린트", "품질 검사" |
+| `final-check-automation` | 5 | "E2E", "최종 검증" |
+| `phase-validation` | 0-6 | "Phase 검증" |
+| `pre-work-research` | 0 | "신규 기능", "오픈소스" |
+| `issue-resolution` | 1, 2 | "이슈 해결" |
+| `parallel-agent-orchestration` | 1, 2 | "병렬 개발" |
+| `journey-sharing` | 4 | "여정 저장" |
+
+수동 호출 스킬: `webapp-testing`, `pr-review-agent`, `command-analytics`, `skill-creator`
 
 ---
 
@@ -107,11 +172,11 @@ D:\AI\claude01\
 ### Crash Prevention (필수)
 
 ```powershell
-# ❌ 금지 (120초 초과 → 크래시)
+# 금지 (120초 초과 → 크래시)
 pytest tests/ -v --cov                # 대규모 테스트
 npm install && npm run build          # 체인 명령
 
-# ✅ 권장
+# 권장
 pytest tests/test_a.py -v             # 개별 실행
 # 또는 run_in_background: true
 ```
@@ -168,7 +233,7 @@ MAJOR.MINOR.PATCH (Semantic Versioning)
 Refs: #issue1, #issue2
 Closes #issue (PR에서 이슈 자동 종료 시)
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
+Generated with [Claude Code](https://claude.com/claude-code)
 ```
 
 ### 코멘트 태깅 규칙
@@ -188,6 +253,7 @@ Closes #issue (PR에서 이슈 자동 종료 시)
 |------|------|
 | `docs/WORKFLOW_REFERENCE.md` | 상세 워크플로우 |
 | `docs/AGENTS_REFERENCE.md` | 에이전트 목록 |
-| `docs/SUBREPO_ANALYSIS_REPORT.md` | 서브레포 분석 보고서 |
-| `docs/templates/` | 에이전트 템플릿 |
+| `docs/COMMAND_SELECTOR.md` | 커맨드 선택 가이드 |
+| `docs/PLANNED_AGENTS.md` | 계획 에이전트 목록 |
 | `.claude/commands/` | 커맨드 상세 |
+| `.claude/skills/` | 스킬 상세 |
