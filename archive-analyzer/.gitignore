@@ -1,1 +1,9 @@
 *.db
+
+# Environment files with credentials
+.env
+*.env.local
+
+# GCP credentials
+config/gcp-service-account.json
+**/gcp-service-account.json

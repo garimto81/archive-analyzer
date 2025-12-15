@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
-from .utils.path import generate_file_id, normalize_path
+from .utils.path import generate_file_id, normalize_path, normalize_unc_path
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +176,16 @@ def classify_path_multilevel(path: str) -> SubcatalogMatch:
 
 
 def local_to_nas(local_path: str, config: SyncConfig) -> str:
-    """로컬 경로를 NAS 경로로 변환"""
+    """로컬 경로를 NAS 경로로 변환
+
+    Issue #52: UNC 경로는 백슬래시로 통일
+    """
+    # 먼저 슬래시로 통일하여 prefix 매칭
     normalized = local_path.replace("\\", "/")
-    return normalized.replace(config.local_prefix, config.nas_prefix)
+    nas_path = normalized.replace(config.local_prefix, config.nas_prefix)
+
+    # UNC 경로 정규화 (백슬래시 통일)
+    return normalize_unc_path(nas_path)
 
 
 def format_resolution(width: Optional[int], height: Optional[int]) -> Optional[str]:
